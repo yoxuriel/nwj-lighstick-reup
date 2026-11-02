@@ -24,6 +24,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import kotlin.math.max
 
 class MainActivity : Activity() {
 
@@ -35,10 +36,10 @@ class MainActivity : Activity() {
     private lateinit var store: Store
 
     // ---- estado
-    private var baseColor = 0x0000FF   // color a brillo completo
+    private var baseColor = 0x1E5AFF   // color LED a brillo completo
     private var brightness = 1f        // 0.03..1
     private var mode = 1               // modo del lightstick 1..4
-    private var paletteId = 1          // 0 arcoiris, 1 NewJeans, 2..6 integrantes
+    private var paletteId = 1          // 0 arcoíris, 1 NewJeans, 2..6 integrantes
     private var sourceId = 0           // 0 micrófono, 1 audio del celular
     private var minBright = 0.04f
     private var tab = 0
@@ -46,8 +47,12 @@ class MainActivity : Activity() {
     private var pendingSave: Pair<String, String>? = null
     private var lastConnState = -1
     private var identifying = false
+    private var seenLost = 0
+    private var resumeMusicOnConnect = false
+    private var lostDialog: Dialog? = null
 
     // ---- vistas
+    private lateinit var sky: HalftoneSky
     private lateinit var pages: Array<View>
     private lateinit var nav: NavBar
     private lateinit var statusDot: View
@@ -57,7 +62,7 @@ class MainActivity : Activity() {
     private lateinit var deviceName: TextView
     private lateinit var deviceSub: TextView
     private lateinit var statusLine: TextView
-    private lateinit var connectBtn: TextView
+    private lateinit var connectBtn: StickerText
     private lateinit var hueSlider: PillSlider
     private lateinit var brightSlider: PillSlider
     private lateinit var manualBlock: LinearLayout
@@ -71,6 +76,7 @@ class MainActivity : Activity() {
     private val bubbles = ArrayList<ColorBubble>()
     private val effectCards = ArrayList<EffectCard>()
     private val styleCards = ArrayList<StyleCard>()
+    private val bouncers = ArrayList<View>()
 
     // =================================================================== ciclo de vida
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -79,9 +85,10 @@ class MainActivity : Activity() {
         store = Store(this)
         LightStick.init(applicationContext)
         loadSettings()
+        seenLost = LightStick.lostCount
 
-        window.statusBarColor = Th.SKY_TOP
-        window.navigationBarColor = Th.SKY_BOTTOM
+        window.statusBarColor = Color.WHITE
+        window.navigationBarColor = Th.LAV_BOTTOM
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility =
             View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
@@ -93,23 +100,25 @@ class MainActivity : Activity() {
     private val tick = object : Runnable {
         override fun run() {
             refresh()
-            ui.postDelayed(this, 120)
+            ui.postDelayed(this, 100)
         }
     }
 
     override fun onResume() {
         super.onResume()
+        sky.running = true
         ui.post(tick)
     }
 
     override fun onPause() {
+        sky.running = false
         ui.removeCallbacks(tick)
         saveSettings()
         super.onPause()
     }
 
     private fun loadSettings() {
-        baseColor = store.getInt("baseColor", 0x0000FF)
+        baseColor = store.getInt("ledColor", 0x1E5AFF)
         brightness = store.getFloat("brightness", 1f)
         mode = store.getInt("mode", 1).coerceIn(1, 4)
         paletteId = store.getInt("palette", 1).coerceIn(0, 6)
@@ -120,7 +129,7 @@ class MainActivity : Activity() {
     }
 
     private fun saveSettings() {
-        store.putInt("baseColor", baseColor)
+        store.putInt("ledColor", baseColor)
         store.putFloat("brightness", brightness)
         store.putInt("mode", mode)
         store.putInt("palette", paletteId)
@@ -131,7 +140,8 @@ class MainActivity : Activity() {
     // =================================================================== estructura
     private fun buildUi() {
         val root = FrameLayout(this)
-        root.addView(SkyBackground(this), FrameLayout.LayoutParams(-1, -1))
+        sky = HalftoneSky(this)
+        root.addView(sky, FrameLayout.LayoutParams(-1, -1))
 
         val column = LinearLayout(this)
         column.orientation = LinearLayout.VERTICAL
@@ -145,7 +155,7 @@ class MainActivity : Activity() {
 
         nav = NavBar(this, listOf("Luz", "Música", "Info")) { showTab(it) }
         val navLp = FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM)
-        navLp.setMargins(dp(18), 0, dp(18), dp(14))
+        navLp.setMargins(dp(14), 0, dp(14), dp(12))
         root.addView(nav, navLp)
         setContentView(root)
         updateChoices()
@@ -156,14 +166,14 @@ class MainActivity : Activity() {
         sv.isVerticalScrollBarEnabled = false
         sv.overScrollMode = View.OVER_SCROLL_NEVER
         sv.clipToPadding = false
-        content.setPadding(dp(16), dp(4), dp(16), dp(120))
+        content.setPadding(dp(14), dp(4), dp(14), dp(118))
         sv.addView(content)
         return sv
     }
 
     private fun column(): LinearLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
-    private fun LinearLayout.addGap(v: View, topDp: Int = 14) {
+    private fun LinearLayout.addGap(v: View, topDp: Int = 16) {
         val lp = LinearLayout.LayoutParams(-1, -2)
         lp.topMargin = dp(topDp)
         addView(v, lp)
@@ -178,58 +188,75 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun softButton(t: String, onClick: () -> Unit): TextView = TextView(this).apply {
-        text = t
-        textSize = 14.5f
-        typeface = Th.bold
-        gravity = Gravity.CENTER
-        setTextColor(Th.NAVY)
-        background = roundRect(Color.WHITE, dpf(24f), dp(2), Th.LINE)
-        setPadding(dp(12), dp(11), dp(12), dp(11))
-        isClickable = true
-        setOnClickListener { onClick() }
-        touchFx(dpf(24f))
+    private fun sticker(kind: String, g: IntArray, sizeDp: Int, wobbleDeg: Float = 8f, ms: Long = 1700): StickerShape {
+        val s = StickerShape(this, kind, g[0], g[1])
+        s.layoutParams = FrameLayout.LayoutParams(dp(sizeDp), dp(sizeDp))
+        if (wobbleDeg > 0f) s.wobble(wobbleDeg, ms)
+        return s
+    }
+
+    private fun place(parent: FrameLayout, v: View, gravity: Int, l: Int = 0, t: Int = 0, r: Int = 0, b: Int = 0) {
+        val lp = v.layoutParams as FrameLayout.LayoutParams
+        lp.gravity = gravity
+        lp.setMargins(dp(l), dp(t), dp(r), dp(b))
+        parent.addView(v, lp)
     }
 
     private fun showTab(i: Int) {
         tab = i
         for (k in pages.indices) pages[k].visibility = if (k == i) View.VISIBLE else View.GONE
         pages[i].alpha = 0f
-        pages[i].translationY = dpf(10f)
-        pages[i].animate().alpha(1f).translationY(0f).setDuration(200).start()
+        pages[i].translationY = dpf(12f)
+        pages[i].animate().alpha(1f).translationY(0f).setDuration(220).start()
         nav.select(i)
         if (i == 2) rebuildSaved()
     }
 
     // =================================================================== encabezado
     private fun buildHeader(): View {
-        val h = LinearLayout(this)
-        h.orientation = LinearLayout.HORIZONTAL
-        h.gravity = Gravity.CENTER_VERTICAL
-        h.setPadding(dp(22), dp(14), dp(18), dp(10))
+        val frame = FrameLayout(this)
+        val col = column()
+        col.setPadding(dp(18), dp(12), dp(18), dp(6))
 
-        val titles = column()
-        titles.addView(label("Light Stick", 30f, true))
-        titles.addView(label("✦ color & music ✦", 14f, true, Th.PINK))
-        h.addView(titles, LinearLayout.LayoutParams(0, -2, 1f))
+        col.addView(StarText(this, "LIGHT STICK", Th.INK), LinearLayout.LayoutParams(-1, -2).apply { rightMargin = dp(46) })
+
+        val sub = LinearLayout(this)
+        sub.orientation = LinearLayout.HORIZONTAL
+        sub.gravity = Gravity.CENTER_VERTICAL
+        val w1 = stickerText("color", 22f, Th.G_PINK, 3f)
+        val w2 = stickerText("&", 20f, Th.G_YELLOW, 3f)
+        val w3 = stickerText("music", 22f, Th.G_GREEN, 3f)
+        val words = LinearLayout(this)
+        words.orientation = LinearLayout.HORIZONTAL
+        words.gravity = Gravity.CENTER_VERTICAL
+        words.addView(w1)
+        words.addView(w2)
+        words.addView(w3)
+        words.rotation = -3f
+        sub.addView(words, LinearLayout.LayoutParams(0, -2, 1f))
 
         val chip = LinearLayout(this)
         chip.orientation = LinearLayout.HORIZONTAL
         chip.gravity = Gravity.CENTER_VERTICAL
-        chip.background = roundRect(Color.WHITE, dpf(20f))
-        chip.elevation = dpf(3f)
-        chip.setPadding(dp(12), dp(8), dp(14), dp(8))
+        chip.background = StickerDrawable(Color.WHITE, Color.WHITE, dpf(18f), dpf(2.2f), dpf(3f))
+        chip.setPadding(dp(10), dp(6), dp(12) + dp(3), dp(6) + dp(3))
         statusDot = View(this)
         statusDot.background = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
             setColor(Th.GREY)
+            setStroke(dp(2), Th.INK)
         }
-        chip.addView(statusDot, LinearLayout.LayoutParams(dp(10), dp(10)))
+        chip.addView(statusDot, LinearLayout.LayoutParams(dp(12), dp(12)))
         statusText = label("Sin conexión", 13f, true)
-        statusText.setPadding(dp(7), 0, 0, 0)
+        statusText.setPadding(dp(6), 0, 0, 0)
         chip.addView(statusText)
-        h.addView(chip)
-        return h
+        sub.addView(chip)
+        col.addView(sub)
+        frame.addView(col, FrameLayout.LayoutParams(-1, -2))
+
+        place(frame, sticker("star", Th.G_BLUE, 40, 10f, 1900), Gravity.TOP or Gravity.END, r = 14, t = 4)
+        place(frame, sticker("sparkle", Th.G_YELLOW, 26, 14f, 1300), Gravity.TOP or Gravity.END, r = 4, t = 40)
+        return frame
     }
 
     // =================================================================== página: Luz
@@ -237,6 +264,7 @@ class MainActivity : Activity() {
         val col = column()
 
         // ---- tarjeta: mi lightstick
+        val devFrame = FrameLayout(this)
         val dev = card()
         val top = LinearLayout(this)
         top.orientation = LinearLayout.HORIZONTAL
@@ -245,66 +273,71 @@ class MainActivity : Activity() {
         top.addView(lightOrb, LinearLayout.LayoutParams(dp(112), dp(112)))
         val txt = column()
         txt.setPadding(dp(10), 0, 0, 0)
-        deviceName = label("Mi lightstick", 19f, true)
-        deviceSub = label("", 12.5f, false, Th.NAVY_SOFT)
-        statusLine = label("", 12.5f, false, Th.NAVY_SOFT)
+        deviceName = label("Mi lightstick", 20f, true)
+        deviceSub = label("", 13f, false, Th.INK_SOFT)
+        statusLine = label("", 13f, false, Th.INK_SOFT)
         txt.addView(deviceName)
         txt.addView(deviceSub)
         txt.addView(statusLine)
         top.addView(txt, LinearLayout.LayoutParams(0, -2, 1f))
         dev.addView(top)
-        connectBtn = pillButton("Conectar") { onConnectClick() }
+        connectBtn = stickerButton("Conectar", Th.G_GREEN) { onConnectClick() }
         dev.addGap(connectBtn, 12)
-        dev.addGap(row(softButton("Elegir otro") { openPicker() }, softButton("Identificar") { identify() }), 6)
-        col.addGap(dev, 6)
+        dev.addGap(row(softButton("Elegir otro") { openPicker() }, softButton("Identificar") { identify() }), 4)
+        devFrame.addView(dev, FrameLayout.LayoutParams(-1, -2))
+        place(devFrame, sticker("crown", Th.G_YELLOW, 34, 6f, 2100), Gravity.TOP or Gravity.START, l = 2, t = -6)
+        col.addGap(devFrame, 8)
 
-        // ---- controles manuales
-        manualBlock = column()
-        musicActiveNote = chatBubble("El modo música está activo. Detenlo para usar estos controles.")
+        musicActiveNote = chatBubble("El modo música está activo. Detenlo para usar estos controles.", mine = true)
         musicActiveNote.visibility = View.GONE
         col.addGap(musicActiveNote, 12)
 
+        // ---- controles manuales
+        manualBlock = column()
+
+        val colorFrame = FrameLayout(this)
         val colorCard = card()
-        colorCard.addView(cardTitle("Color", "Desliza o toca una burbuja"))
+        colorCard.addView(cardTitle("COLOR", "Desliza o toca una burbuja"))
         hueSlider = PillSlider(this) { v ->
             setBase(Color.HSVToColor(floatArrayOf(v * 359f, 1f, 1f)) and 0xFFFFFF, fromSlider = true)
         }
-        hueSlider.colors = IntArray(7) { Color.HSVToColor(floatArrayOf(it * 60f, 1f, 1f)) }
-        colorCard.addView(hueSlider, LinearLayout.LayoutParams(-1, dp(42)))
+        hueSlider.colors = IntArray(7) { Color.HSVToColor(floatArrayOf(it * 60f, 0.85f, 1f)) }
+        colorCard.addView(hueSlider, LinearLayout.LayoutParams(-1, dp(44)))
 
-        colorCard.addGap(label("Colores del lightstick", 14f, true), 14)
-        val lsNames = arrayOf("Blanco", "Verde", "Rosa", "Azul", "Naranja", "Amarillo")
-        val lsViews = lsNames.indices.map { i ->
-            val rgb = Palettes.NEWJEANS[i]
-            swatch(lsNames[i], rgb, 48, bubbles) { setBase(rgb) }
+        colorCard.addGap(pixelTitle("LIGHTSTICK", 14f), 14)
+        val lsViews = Palettes.NEWJEANS_NAMES.indices.map { i ->
+            val led = Palettes.NEWJEANS[i]
+            swatch(Palettes.NEWJEANS_NAMES[i], Palettes.NEWJEANS_UI[i], led, 54, bubbles) { setBase(led) }
         }
         colorCard.addView(row(lsViews[0], lsViews[1], lsViews[2], gapDp = 2))
         colorCard.addView(row(lsViews[3], lsViews[4], lsViews[5], gapDp = 2))
 
-        colorCard.addGap(label("Integrantes", 14f, true), 10)
+        colorCard.addGap(pixelTitle("INTEGRANTES", 14f), 10)
         val mViews = Palettes.MEMBER_NAMES.indices.map { i ->
-            val rgb = Palettes.MEMBER_COLORS[i]
-            swatch(Palettes.MEMBER_NAMES[i], rgb, 44, bubbles) { setBase(rgb) }
+            val led = Palettes.MEMBER_COLORS[i]
+            swatch(Palettes.MEMBER_NAMES[i], Palettes.MEMBER_UI[i], led, 50, bubbles) { setBase(led) }
         }
         colorCard.addView(row(*mViews.toTypedArray(), gapDp = 1))
-        manualBlock.addGap(colorCard, 0)
+        colorFrame.addView(colorCard, FrameLayout.LayoutParams(-1, -2))
+        place(colorFrame, sticker("heart", Th.G_PINK, 34, 9f, 1600), Gravity.TOP or Gravity.END, r = 14, t = -10)
+        manualBlock.addGap(colorFrame, 0)
 
         val brCard = card()
-        brCard.addView(cardTitle("Brillo"))
+        brCard.addView(cardTitle("BRILLO"))
         brightSlider = PillSlider(this) { v ->
             brightness = 0.03f + v * 0.97f
             sendManual()
         }
         brightSlider.value = ((brightness - 0.03f) / 0.97f)
-        brCard.addView(brightSlider, LinearLayout.LayoutParams(-1, dp(42)))
+        brCard.addView(brightSlider, LinearLayout.LayoutParams(-1, dp(44)))
         manualBlock.addGap(brCard)
 
+        val fxFrame = FrameLayout(this)
         val fxCard = card()
-        fxCard.addView(cardTitle("Efecto", "Los 4 efectos de la app oficial"))
-        // Mismo orden de íconos que la app oficial; el número de modo sale del código de esa app.
+        fxCard.addView(cardTitle("EFECTO", "Los 4 efectos de la app oficial"))
         val fx = listOf(
             EffectCard(this, 0, "Encendido", 1),
-            EffectCard(this, 1, "Destello doble", 4),
+            EffectCard(this, 1, "Destello x2", 4),
             EffectCard(this, 2, "Destello", 2),
             EffectCard(this, 3, "Burbujas", 3)
         )
@@ -318,12 +351,13 @@ class MainActivity : Activity() {
         }
         fxCard.addView(row(fx[0], fx[1], gapDp = 5))
         fxCard.addView(row(fx[2], fx[3], gapDp = 5))
-        manualBlock.addGap(fxCard)
+        fxFrame.addView(fxCard, FrameLayout.LayoutParams(-1, -2))
+        place(fxFrame, sticker("sparkle", Th.G_BLUE, 34, 12f, 1500), Gravity.TOP or Gravity.END, r = 14, t = -8)
+        manualBlock.addGap(fxFrame)
 
         col.addGap(manualBlock, 14)
         updateHueFromBase()
-        brightSlider.colors = intArrayOf(0xFF101018.toInt(), opaque(baseColor))
-        updateChoices()
+        brightSlider.colors = intArrayOf(0xFF101018.toInt(), uiColorFor(baseColor))
         return col
     }
 
@@ -335,31 +369,40 @@ class MainActivity : Activity() {
         hero.gravity = Gravity.CENTER_HORIZONTAL
         val stage = FrameLayout(this)
         musicOrb = Orb(this)
-        stage.addView(musicOrb, FrameLayout.LayoutParams(dp(210), dp(210), Gravity.CENTER))
+        stage.addView(musicOrb, FrameLayout.LayoutParams(dp(220), dp(220), Gravity.CENTER))
         playBtn = PlayButton(this)
         playBtn.isClickable = true
         playBtn.setOnClickListener { onMusicClick() }
         playBtn.touchFx(dpf(50f))
-        stage.addView(playBtn, FrameLayout.LayoutParams(dp(96), dp(96), Gravity.CENTER))
-        hero.addView(stage, LinearLayout.LayoutParams(-2, -2))
+        stage.addView(playBtn, FrameLayout.LayoutParams(dp(100), dp(100), Gravity.CENTER))
+        val n1 = sticker("notes", Th.G_BLUE, 46, 10f, 1200)
+        val n2 = sticker("notes", Th.G_YELLOW, 38, 12f, 1000)
+        val n3 = sticker("notes", Th.G_PINK, 40, 9f, 1400)
+        val s1 = sticker("star", Th.G_YELLOW, 30, 14f, 1700)
+        place(stage, n1, Gravity.TOP or Gravity.START, l = 0, t = 6)
+        place(stage, n2, Gravity.BOTTOM or Gravity.END, r = 2, b = 14)
+        place(stage, n3, Gravity.TOP or Gravity.END, r = 4, t = 18)
+        place(stage, s1, Gravity.BOTTOM or Gravity.START, l = 12, b = 6)
+        bouncers.addAll(listOf(n1, n2, n3, s1))
+        hero.addView(stage, LinearLayout.LayoutParams(-1, dp(230)))
         musicMsg = chatBubble("Elige un estilo y toca ▶")
         val msgLp = LinearLayout.LayoutParams(-2, -2)
-        msgLp.topMargin = dp(8)
+        msgLp.topMargin = dp(6)
         msgLp.gravity = Gravity.START
         hero.addView(musicMsg, msgLp)
-        col.addGap(hero, 6)
+        col.addGap(hero, 8)
 
         val styles = card()
-        styles.addView(cardTitle("Estilo", "Cómo cambia la luz con el ritmo"))
-        val rainbow = StyleCard(this, rainbowPreview(), dp(96), dp(22), "Arcoíris")
-        val nj = StyleCard(this, DotsPreview(this, Palettes.NEWJEANS), dp(108), dp(22), "NewJeans")
+        styles.addView(cardTitle("ESTILO", "Cómo cambia la luz con el ritmo"))
+        val rainbow = StyleCard(this, RainbowPreview(this), dp(96), dp(24), "Arcoíris")
+        val nj = StyleCard(this, DotsPreview(this, Palettes.NEWJEANS_UI), dp(112), dp(24), "NewJeans")
         styles.addView(row(rainbow, nj, gapDp = 5))
         styleCards.add(rainbow)
         styleCards.add(nj)
-        styles.addGap(label("Integrantes", 14f, true), 10)
+        styles.addGap(pixelTitle("INTEGRANTES", 14f), 10)
         val memberCards = Palettes.MEMBER_NAMES.indices.map { i ->
-            val b = ColorBubble(this, Palettes.MEMBER_COLORS[i])
-            StyleCard(this, b, dp(36), dp(36), Palettes.MEMBER_NAMES[i], 11.5f)
+            val b = ColorBubble(this, Palettes.MEMBER_UI[i], Palettes.MEMBER_COLORS[i])
+            StyleCard(this, b, dp(38), dp(38), Palettes.MEMBER_NAMES[i], 11.5f)
         }
         styleCards.addAll(memberCards)
         styles.addView(row(*memberCards.toTypedArray(), gapDp = 2))
@@ -373,11 +416,11 @@ class MainActivity : Activity() {
         col.addGap(styles)
 
         val src = card()
-        src.addView(cardTitle("¿De dónde viene la música?"))
+        src.addView(cardTitle("FUENTE DE AUDIO"))
         val seg = LinearLayout(this)
         seg.orientation = LinearLayout.HORIZONTAL
-        seg.background = roundRect(0x1A1B2A6B, dpf(24f))
-        seg.setPadding(dp(4), dp(4), dp(4), dp(4))
+        seg.background = StickerDrawable(0xFFEDE6FF.toInt(), 0xFFE2D8FF.toInt(), dpf(24f), dpf(2.2f), dpf(3f))
+        seg.setPadding(dp(5), dp(5), dp(5) + dp(3), dp(5) + dp(3))
         segMic = segItem("Micrófono") { sourceId = 0; updateChoices() }
         segInternal = segItem("Este celular") { sourceId = 1; updateChoices() }
         seg.addView(segMic, LinearLayout.LayoutParams(0, -2, 1f))
@@ -387,19 +430,19 @@ class MainActivity : Activity() {
             label(
                 "Micrófono: concierto, bocina o cualquier sonido cercano.\n" +
                     "Este celular: lo que suena en tu teléfono (algunas apps lo bloquean).",
-                12.5f, false, Th.NAVY_SOFT
+                13f, false, Th.INK_SOFT
             ), 10
         )
         col.addGap(src)
 
         val minCard = card()
-        minCard.addView(cardTitle("Brillo mínimo", "Para que no se apague en los silencios"))
+        minCard.addView(cardTitle("BRILLO MÍNIMO", "Para que no se apague en los silencios"))
         val minSlider = PillSlider(this) { v -> minBright = v * 0.4f }
         minSlider.colors = intArrayOf(0xFF1B1F3A.toInt(), 0xFFB9C8FF.toInt())
         minSlider.value = minBright / 0.4f
-        minCard.addView(minSlider, LinearLayout.LayoutParams(-1, dp(42)))
+        minCard.addView(minSlider, LinearLayout.LayoutParams(-1, dp(44)))
         minCard.addGap(
-            label("Durante la música se usa el efecto elegido en Luz (recomendado: Encendido).", 12.5f, false, Th.NAVY_SOFT),
+            label("Durante la música se usa el efecto elegido en Luz (recomendado: Encendido).", 13f, false, Th.INK_SOFT),
             10
         )
         col.addGap(minCard)
@@ -408,10 +451,11 @@ class MainActivity : Activity() {
 
     private fun segItem(t: String, onClick: () -> Unit): TextView = TextView(this).apply {
         text = t
-        textSize = 14.5f
-        typeface = Th.bold
+        textSize = 15f
+        typeface = Th.roundBold
         gravity = Gravity.CENTER
-        setPadding(dp(8), dp(11), dp(8), dp(11))
+        setTextColor(Th.INK)
+        setPadding(dp(8), dp(10), dp(8), dp(10))
         isClickable = true
         setOnClickListener { onClick() }
     }
@@ -421,47 +465,57 @@ class MainActivity : Activity() {
         val col = column()
 
         val devCard = card()
-        devCard.addView(cardTitle("Lightstick conectado"))
+        devCard.addView(cardTitle("CONECTADO"))
         infoRows = column()
         devCard.addView(infoRows)
         devCard.addGap(row(softButton("Renombrar") { renameCurrent() }, softButton("Identificar") { identify() }), 10)
-        col.addGap(devCard, 6)
+        col.addGap(devCard, 8)
 
         val savedCard = card()
-        savedCard.addView(cardTitle("Mis lightsticks", "Toca uno para hacerlo el principal"))
+        savedCard.addView(cardTitle("MIS LIGHTSTICKS", "Toca uno para hacerlo el principal"))
         savedList = column()
         savedCard.addView(savedList)
         savedCard.addGap(softButton("Agregar / elegir otro") { openPicker() }, 10)
         col.addGap(savedCard)
 
+        val tipsFrame = FrameLayout(this)
         val tips = card()
-        tips.addView(cardTitle("Consejos"))
+        tips.addView(cardTitle("CONSEJOS"))
         val msgs = listOf(
-            "Antes de conectar, cierra la app oficial: el lightstick acepta una sola conexión.",
-            "¿Muchos lightsticks cerca? Usa \"Elegir otro\": el más cercano tiene la señal más fuerte, y el final de la dirección es el mismo que muestra la app oficial en Ajustes → MAC.",
-            "Con \"Identificar\" el lightstick conectado parpadea rosa y azul.",
-            "Si el modo música con \"Este celular\" no reacciona, la app que suena bloquea la captura. Usa el micrófono.",
-            "En Realme, si el modo música se corta con la pantalla apagada: Ajustes → Batería → esta app → permitir actividad en segundo plano."
+            "Antes de conectar, cierra la app oficial: el lightstick acepta una sola conexión." to false,
+            "¿Y si hay muchos lightsticks en el concierto?" to true,
+            "Usa \"Elegir otro\": el más cercano tiene la señal más fuerte, y el final de la dirección es el mismo que muestra la app oficial en Ajustes → MAC. Después \"Identificar\" lo hace parpadear rosa y azul." to false,
+            "¿Y si se desconecta?" to true,
+            "Te aviso, pauso la música y con \"Reconectar\" sigue sola." to false,
+            "Si \"Este celular\" no reacciona, la app que suena bloquea la captura: usa el micrófono." to false,
+            "En Realme, si la música se corta con la pantalla apagada: Ajustes → Batería → esta app → permitir en segundo plano." to false
         )
-        for (m in msgs) {
-            val b = chatBubble(m)
+        for ((m, mine) in msgs) {
+            val b = chatBubble(m, mine)
             val lp = LinearLayout.LayoutParams(-2, -2)
             lp.topMargin = dp(8)
-            lp.rightMargin = dp(24)
+            if (mine) {
+                lp.gravity = Gravity.END
+                lp.leftMargin = dp(40)
+            } else {
+                lp.rightMargin = dp(30)
+            }
             tips.addView(b, lp)
         }
-        col.addGap(tips)
+        tipsFrame.addView(tips, FrameLayout.LayoutParams(-1, -2))
+        place(tipsFrame, sticker("bubble", Th.G_GREEN, 40, 8f, 1800), Gravity.TOP or Gravity.END, r = 14, t = -8)
+        col.addGap(tipsFrame)
 
         val about = card()
-        about.addView(cardTitle("Acerca de"))
+        about.addView(cardTitle("ACERCA DE"))
         about.addView(
             label(
                 "App personal, no oficial, para el NewJeans Official Light Stick.\n" +
                     "Solo escribe en la función de color/efecto (la misma que usa la app oficial); " +
                     "nunca toca la actualización de firmware.\n\n" +
                     "Los nombres de los efectos siguen los íconos de la app oficial.\n" +
-                    "Fuente: Fredoka (SIL Open Font License).",
-                13f, false, Th.NAVY_SOFT
+                    "Fuentes: Fredoka, Pixelify Sans y Silkscreen (SIL Open Font License).",
+                13f, false, Th.INK_SOFT
             )
         )
         col.addGap(about)
@@ -472,8 +526,8 @@ class MainActivity : Activity() {
         val r = LinearLayout(this)
         r.orientation = LinearLayout.HORIZONTAL
         r.setPadding(0, dp(5), 0, dp(5))
-        r.addView(label(k, 14f, false, Th.NAVY_SOFT), LinearLayout.LayoutParams(0, -2, 1f))
-        r.addView(label(v, 14f, true))
+        r.addView(label(k, 14.5f, false, Th.INK_SOFT), LinearLayout.LayoutParams(0, -2, 1f))
+        r.addView(label(v, 14.5f, true))
         return r
     }
 
@@ -482,12 +536,12 @@ class MainActivity : Activity() {
     private fun refreshInfoRows() {
         val addr = LightStick.address
         val name = if (addr != null) (store.nameOf(addr) ?: "Lightstick") else "—"
-        val key = "$addr|$name|${LightStick.battery}|${LightStick.firmware}|${LightStick.model}"
+        val key = "$addr|$name|${LightStick.connected}|${LightStick.battery}|${LightStick.firmware}|${LightStick.model}"
         if (key == lastInfoKey) return
         lastInfoKey = key
         infoRows.removeAllViews()
         if (addr == null || !LightStick.connected) {
-            infoRows.addView(label("Ninguno conectado ahora.", 14f, false, Th.NAVY_SOFT))
+            infoRows.addView(label("Ninguno conectado ahora.", 14.5f, false, Th.INK_SOFT))
             return
         }
         infoRows.addView(infoRow("Nombre", name))
@@ -501,7 +555,7 @@ class MainActivity : Activity() {
         savedList.removeAllViews()
         val known = store.known()
         if (known.isEmpty()) {
-            savedList.addView(label("Aún no guardas ninguno. Conéctate y se guarda solo.", 14f, false, Th.NAVY_SOFT))
+            savedList.addView(label("Aún no guardas ninguno. Conéctate y se guarda solo.", 14.5f, false, Th.INK_SOFT))
             return
         }
         val def = store.defaultAddr
@@ -509,13 +563,14 @@ class MainActivity : Activity() {
             val r = LinearLayout(this)
             r.orientation = LinearLayout.HORIZONTAL
             r.gravity = Gravity.CENTER_VERTICAL
-            r.background = roundRect(if (addr == def) 0xFFEAF0FF.toInt() else Th.CARD_SOFT, dpf(18f), dp(2), if (addr == def) Th.BLUE else Color.WHITE)
-            r.setPadding(dp(14), dp(10), dp(10), dp(10))
+            val g = if (addr == def) Th.G_YELLOW else Th.G_WHITE
+            r.background = StickerDrawable(g[0], g[1], dpf(18f), dpf(2.2f), dpf(3f))
+            r.setPadding(dp(14), dp(10), dp(10) + dp(3), dp(10) + dp(3))
             val t = column()
-            t.addView(label((if (addr == def) "★ " else "") + name, 15f, true))
-            t.addView(label("**:**:" + macTail(addr), 12.5f, false, Th.NAVY_SOFT))
+            t.addView(label((if (addr == def) "★ " else "") + name, 15.5f, true))
+            t.addView(label("**:**:" + macTail(addr), 13f, false, Th.INK_SOFT))
             r.addView(t, LinearLayout.LayoutParams(0, -2, 1f))
-            val del = label("Olvidar", 13f, true, Th.PINK)
+            val del = label("Olvidar", 13.5f, true, 0xFFE0249B.toInt())
             del.setPadding(dp(10), dp(8), dp(10), dp(8))
             del.setOnClickListener {
                 store.forget(addr)
@@ -546,7 +601,7 @@ class MainActivity : Activity() {
         }
         (statusDot.background as GradientDrawable).setColor(
             when {
-                conn -> Th.GREEN_OK
+                conn -> Th.OK
                 connecting -> Th.AMBER
                 else -> Th.GREY
             }
@@ -557,12 +612,17 @@ class MainActivity : Activity() {
             lastConnState = state
             if (state == 1) {
                 connectBtn.text = "Desconectar"
-                connectBtn.background = roundRect(Color.WHITE, dpf(30f), dp(2), Th.LINE)
-                connectBtn.setTextColor(Th.NAVY)
+                connectBtn.background = StickerDrawable(Th.G_WHITE[0], Th.G_WHITE[1], dpf(30f), dpf(2.5f), dpf(4f), false)
+                connectBtn.fillTop = Th.INK
+                connectBtn.fillBottom = Th.INK
+                connectBtn.outline = 0f
             } else {
-                connectBtn.background = gradientPill(dpf(30f), Th.BLUE, Th.PINK)
-                connectBtn.setTextColor(Color.WHITE)
+                connectBtn.background = StickerDrawable(Th.G_GREEN[0], Th.G_GREEN[1], dpf(30f), dpf(2.5f), dpf(4f), true)
+                connectBtn.fillTop = Color.WHITE
+                connectBtn.fillBottom = Color.WHITE
+                connectBtn.outline = dpf(2.6f)
             }
+            connectBtn.invalidate()
         }
         if (state == 0) {
             connectBtn.text = if (store.defaultAddr != null) "Conectar a mi lightstick" else "Buscar mi lightstick"
@@ -589,44 +649,72 @@ class MainActivity : Activity() {
             pendingSave = null
         }
 
+        // ¿se desconectó solo?
+        if (LightStick.lostCount != seenLost) {
+            seenLost = LightStick.lostCount
+            showLostDialog()
+        }
+        // al reconectar, seguir con la música
+        if (resumeMusicOnConnect && conn) {
+            resumeMusicOnConnect = false
+            Bus.pausedByDisconnect = false
+            if (!Bus.musicRunning && has(Manifest.permission.RECORD_AUDIO)) launchService(0, null)
+        }
+
         val manual = manualRgb()
-        lightOrb.color = if (music) Color.rgb(Bus.r, Bus.g, Bus.b) else Color.rgb(manual[0], manual[1], manual[2])
-        musicOrb.color = if (music) Color.rgb(Bus.r, Bus.g, Bus.b) else previewColor()
+        val live = Color.rgb(Bus.r, Bus.g, Bus.b)
+        lightOrb.color = if (music) live else Color.rgb(manual[0], manual[1], manual[2])
+        musicOrb.color = if (music) live else previewColor()
         playBtn.playing = music
         musicMsg.text = if (Bus.message.isNotEmpty()) Bus.message else "Elige un estilo y toca ▶"
         manualBlock.alpha = if (music) 0.4f else 1f
         musicActiveNote.visibility = if (music) View.VISIBLE else View.GONE
+
+        // los stickers de notas brincan con la música
+        val k = if (music) max(Bus.r, max(Bus.g, Bus.b)) / 255f else 0f
+        for (b in bouncers) {
+            b.scaleX = 1f + 0.22f * k
+            b.scaleY = 1f + 0.22f * k
+        }
         if (tab == 2) refreshInfoRows()
     }
 
     private fun previewColor(): Int {
         val t = System.currentTimeMillis()
         return when (paletteId) {
-            0 -> Color.HSVToColor(floatArrayOf(((t / 25) % 360).toFloat(), 0.85f, 1f))
-            1 -> opaque(Palettes.NEWJEANS[((t / 700) % Palettes.NEWJEANS.size).toInt()])
-            else -> opaque(Palettes.MEMBER_COLORS[(paletteId - 2).coerceIn(0, 4)])
+            0 -> Color.HSVToColor(floatArrayOf(((t / 25) % 360).toFloat(), 0.8f, 1f))
+            1 -> opaque(Palettes.NEWJEANS_UI[((t / 700) % Palettes.NEWJEANS_UI.size).toInt()])
+            else -> opaque(Palettes.MEMBER_UI[(paletteId - 2).coerceIn(0, 4)])
         }
     }
 
     private fun updateChoices() {
         for (c in effectCards) c.setChosen(c.mode == mode)
         styleCards.forEachIndexed { i, c -> c.setChosen(i == paletteId) }
-        for (b in bubbles) b.chosen = b.rgb == baseColor
+        for (b in bubbles) b.chosen = b.led == baseColor
         if (::segMic.isInitialized) {
             for ((i, s) in listOf(segMic, segInternal).withIndex()) {
                 val on = i == sourceId
-                s.background = if (on) roundRect(Color.WHITE, dpf(20f)) else null
-                s.elevation = if (on) dpf(2f) else 0f
-                s.setTextColor(if (on) Th.NAVY else Th.NAVY_SOFT)
+                s.background = if (on) StickerDrawable(Th.G_YELLOW[0], Th.G_YELLOW[1], dpf(20f), dpf(2.2f), dpf(2.5f), true) else null
+                s.setTextColor(if (on) Th.INK else Th.INK_SOFT)
             }
         }
     }
 
     // =================================================================== controles manuales
+    /** Color de pantalla para un color LED (si es de la paleta, el pastel de la paleta). */
+    private fun uiColorFor(led: Int): Int {
+        val i1 = Palettes.NEWJEANS.indexOf(led)
+        if (i1 >= 0) return opaque(Palettes.NEWJEANS_UI[i1])
+        val i2 = Palettes.MEMBER_COLORS.indexOf(led)
+        if (i2 >= 0) return opaque(Palettes.MEMBER_UI[i2])
+        return opaque(led)
+    }
+
     private fun setBase(rgb: Int, fromSlider: Boolean = false) {
         baseColor = rgb and 0xFFFFFF
         if (!fromSlider) updateHueFromBase()
-        brightSlider.colors = intArrayOf(0xFF101018.toInt(), opaque(baseColor))
+        brightSlider.colors = intArrayOf(0xFF101018.toInt(), uiColorFor(baseColor))
         updateChoices()
         sendManual()
     }
@@ -661,7 +749,7 @@ class MainActivity : Activity() {
         }
         if (identifying) return
         identifying = true
-        val seq = intArrayOf(0xFF2D9B, 0x000000, 0x1E50FF, 0x000000, 0xFF2D9B, 0x000000, 0x1E50FF, 0x000000)
+        val seq = intArrayOf(0xFF1ED2, 0x000000, 0x1E5AFF, 0x000000, 0xFF1ED2, 0x000000, 0x1E5AFF, 0x000000)
         seq.forEachIndexed { i, c ->
             ui.postDelayed({
                 LightStick.setLed(1, (c shr 16) and 255, (c shr 8) and 255, c and 255)
@@ -671,7 +759,7 @@ class MainActivity : Activity() {
             identifying = false
             val m = LightStick.lastManual
             LightStick.setLed(m[0], m[1], m[2], m[3])
-        }, seq.size * 220L + 50L)
+        }, seq.size * 220L + 80L)
     }
 
     private fun renameCurrent() {
@@ -693,6 +781,58 @@ class MainActivity : Activity() {
             }
             .setNegativeButton("Cancelar", null)
             .show()
+    }
+
+    // =================================================================== diálogos estilo sticker
+    private fun stickerDialog(): Pair<Dialog, LinearLayout> {
+        val dlg = Dialog(this)
+        val box = card()
+        dlg.setContentView(box)
+        dlg.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        dlg.window?.setLayout((resources.displayMetrics.widthPixels * 0.92f).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT)
+        return Pair(dlg, box)
+    }
+
+    /** Aviso de desconexión inesperada, con opción de reconectar (y seguir la música). */
+    private fun showLostDialog() {
+        lostDialog?.dismiss()
+        val wasMusic = Bus.pausedByDisconnect
+        val (dlg, box) = stickerDialog()
+        val head = LinearLayout(this)
+        head.orientation = LinearLayout.HORIZONTAL
+        head.gravity = Gravity.CENTER_VERTICAL
+        val hs = StickerShape(this, "heart", Th.G_PINK[0], Th.G_PINK[1])
+        hs.wobble(10f, 900)
+        head.addView(hs, LinearLayout.LayoutParams(dp(42), dp(42)))
+        head.addView(stickerText("¡Se desconectó!", 24f, Th.G_PINK, 3f))
+        box.addView(head)
+        box.addGap(
+            label(
+                if (wasMusic) "Tu lightstick perdió la conexión y pausé el modo música. ¿Lo reconecto?"
+                else "Tu lightstick perdió la conexión. ¿Está encendido y cerca? ¿Lo reconecto?",
+                15f
+            ), 8
+        )
+        val again = stickerButton(if (wasMusic && sourceId == 0) "Reconectar y seguir" else "Reconectar", Th.G_GREEN) {
+            dlg.dismiss()
+            reconnectLost(wasMusic)
+        }
+        box.addGap(again, 14)
+        box.addGap(softButton("Ahora no") { dlg.dismiss() }, 4)
+        lostDialog = dlg
+        dlg.show()
+    }
+
+    private fun reconnectLost(resumeMusic: Boolean) {
+        val addr = LightStick.lostAddress ?: store.defaultAddr
+        if (addr == null) {
+            openPicker()
+            return
+        }
+        if (!ensureBle { reconnectLost(resumeMusic) }) return
+        resumeMusicOnConnect = resumeMusic && sourceId == 0
+        if (resumeMusic && sourceId == 1) toast("Al conectar, toca ▶ para seguir con el audio del celular")
+        connectTo(addr, store.nameOf(addr) ?: "Mi lightstick")
     }
 
     // =================================================================== conexión
@@ -730,6 +870,8 @@ class MainActivity : Activity() {
     /** Botón principal: se conecta a "mi lightstick"; si no hay uno guardado, abre el selector. */
     private fun onConnectClick() {
         if (LightStick.connected || LightStick.connecting) {
+            resumeMusicOnConnect = false
+            if (Bus.musicRunning) stopService(Intent(this, MusicService::class.java))
             LightStick.disconnect()
             return
         }
@@ -764,20 +906,21 @@ class MainActivity : Activity() {
     /** Lista en vivo de lightsticks cercanos para elegir el tuyo. */
     private fun openPicker() {
         if (!ensureBle { openPicker() }) return
-        if (LightStick.connected || LightStick.connecting) LightStick.disconnect()
+        if (LightStick.connected || LightStick.connecting) {
+            if (Bus.musicRunning) stopService(Intent(this, MusicService::class.java))
+            LightStick.disconnect()
+        }
 
-        val dlg = Dialog(this)
-        val box = card()
-        box.addView(cardTitle("Elige tu lightstick", "Ordenados por cercanía. Compara el final de la dirección con la app oficial (Ajustes → MAC)."))
-        val scanning = label("Buscando…", 13.5f, true, Th.PINK)
+        val (dlg, box) = stickerDialog()
+        box.addView(cardTitle("ELIGE TU LIGHTSTICK", "Ordenados por cercanía. Compara el final de la dirección con la app oficial (Ajustes → MAC)."))
+        val scanning = label("Buscando…", 14f, true, 0xFFE0249B.toInt())
         box.addView(scanning)
         val list = column()
         val sv = ScrollView(this)
         sv.addView(list)
-        box.addGap(sv, 8)
+        box.addGap(sv, 6)
         (sv.layoutParams as LinearLayout.LayoutParams).height = dp(300)
-        val cancel = softButton("Cancelar") { dlg.dismiss() }
-        box.addGap(cancel, 10)
+        box.addGap(softButton("Cancelar") { dlg.dismiss() }, 10)
 
         val known = store.known()
         val def = store.defaultAddr
@@ -790,16 +933,16 @@ class MainActivity : Activity() {
                 r.orientation = LinearLayout.HORIZONTAL
                 r.gravity = Gravity.CENTER_VERTICAL
                 val mine = known.containsKey(f.address)
-                r.background = roundRect(if (mine) 0xFFEAF0FF.toInt() else Th.CARD_SOFT, dpf(18f), dp(2), if (f.address == def) Th.BLUE else Color.WHITE)
-                r.setPadding(dp(12), dp(10), dp(12), dp(10))
+                val g = if (f.address == def) Th.G_YELLOW else if (mine) Th.G_BLUE else Th.G_WHITE
+                r.background = StickerDrawable(g[0], g[1], dpf(18f), dpf(2.2f), dpf(3f))
+                r.setPadding(dp(12), dp(10), dp(12) + dp(3), dp(10) + dp(3))
                 val icon = NavIcon(this, 0)
-                icon.tint = if (mine) Th.BLUE else Th.NAVY_SOFT
                 r.addView(icon, LinearLayout.LayoutParams(dp(26), dp(26)))
                 val t = column()
                 t.setPadding(dp(10), 0, 0, 0)
                 val title = (if (f.address == def) "★ " else "") + (known[f.address] ?: f.name)
-                t.addView(label(title, 15f, true))
-                t.addView(label("**:**:" + macTail(f.address) + " · " + signalText(f.rssi), 12.5f, false, Th.NAVY_SOFT))
+                t.addView(label(title, 15.5f, true))
+                t.addView(label("**:**:" + macTail(f.address) + " · " + signalText(f.rssi), 13f, false, Th.INK_SOFT))
                 r.addView(t, LinearLayout.LayoutParams(0, -2, 1f))
                 r.isClickable = true
                 r.setOnClickListener {
@@ -813,9 +956,6 @@ class MainActivity : Activity() {
             }
         }
 
-        dlg.setContentView(box)
-        dlg.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-        dlg.window?.setLayout((resources.displayMetrics.widthPixels * 0.92f).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT)
         dlg.setOnDismissListener { LightStick.stopScan() }
         dlg.show()
 

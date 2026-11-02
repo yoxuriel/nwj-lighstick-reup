@@ -26,6 +26,9 @@ object Bus {
     @Volatile var g = 0
     @Volatile var b = 0
     @Volatile var message = ""
+
+    /** El modo música se pausó porque se desconectó el lightstick. */
+    @Volatile var pausedByDisconnect = false
 }
 
 class Found(val address: String, val name: String, var rssi: Int)
@@ -57,6 +60,14 @@ object LightStick {
     /** Dirección del lightstick conectado (o al que se está conectando). */
     @Volatile var address: String? = null
 
+    /** Sube en 1 cada vez que el lightstick se desconecta SIN que el usuario lo pida. */
+    @Volatile var lostCount = 0
+
+    /** Dirección del último lightstick que se desconectó solo (para reconectar). */
+    @Volatile var lostAddress: String? = null
+
+    @Volatile private var userDisconnect = false
+
     /** Ultimo color puesto a mano [modo, R, G, B]; se restaura al terminar el modo musica. */
     @Volatile var lastManual = intArrayOf(1, 0, 0, 255)
 
@@ -72,6 +83,13 @@ object LightStick {
     private var lastQueued: ByteArray? = null
     private var busy = false
     private var busySince = 0L
+    private const val MIN_GAP_MS = 50L
+    private var lastWriteAt = 0L
+    private var pumpScheduled = false
+    private val pumpLater = Runnable {
+        synchronized(lock) { pumpScheduled = false }
+        pump()
+    }
 
     fun init(ctx: Context) {
         appContext = ctx.applicationContext
@@ -179,6 +197,7 @@ object LightStick {
     // ------------------------------------------------------------------ conexion
     fun connect(address: String) {
         val dev = adapter?.getRemoteDevice(address) ?: return
+        userDisconnect = false
         closeGatt()
         battery = -1
         firmware = ""
@@ -199,6 +218,7 @@ object LightStick {
             return
         }
         status = "Desconectando…"
+        userDisconnect = true
         g.disconnect()
         // por si el sistema nunca avisa del cierre
         main.postDelayed({
@@ -218,6 +238,7 @@ object LightStick {
             pending = null
             lastQueued = null
             busy = false
+            pumpScheduled = false
         }
         connected = false
         connecting = false
@@ -240,8 +261,19 @@ object LightStick {
                 g.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 val wasConnected = connected
+                val addr = address
+                val byUser = userDisconnect
+                userDisconnect = false
                 closeGatt()
-                status = if (wasConnected) "Se desconectó el lightstick" else "No se pudo conectar (código $st). Inténtalo de nuevo."
+                if (wasConnected && !byUser) {
+                    lostAddress = addr
+                    lostCount++
+                    status = "Se desconectó el lightstick"
+                } else if (byUser) {
+                    status = "Desconectado"
+                } else {
+                    status = "No se pudo conectar (código $st). Inténtalo de nuevo."
+                }
             }
         }
 
@@ -330,7 +362,18 @@ object LightStick {
                 }
                 val p = pending ?: return
                 val c = ledChar ?: return
+                // No saturar al lightstick: como máximo ~20 comandos por segundo
+                // (igual que el script de Windows). Si es muy pronto, se reintenta después.
+                val wait = MIN_GAP_MS - (SystemClock.elapsedRealtime() - lastWriteAt)
+                if (wait > 0) {
+                    if (!pumpScheduled) {
+                        pumpScheduled = true
+                        main.postDelayed(pumpLater, wait)
+                    }
+                    return
+                }
                 pending = null
+                lastWriteAt = SystemClock.elapsedRealtime()
                 busy = if (Build.VERSION.SDK_INT >= 33) {
                     g.writeCharacteristic(c, p, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == 0
                 } else {

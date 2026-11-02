@@ -8,15 +8,20 @@ import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-/** Paletas de colores (RGB como 0xRRGGBB). */
+/**
+ * Paletas de colores (0xRRGGBB).
+ * *_UI = como se ven en la pantalla (paleta estilo Phoning).
+ * Sin sufijo = lo que se manda al LED (más saturado, porque en el LED los pasteles se ven blancos).
+ */
 object Palettes {
-    /** Los 6 colores del lightstick: blanco, verde, rosa, azul, naranja, amarillo. */
-    val NEWJEANS = intArrayOf(0xFFFFFF, 0x00FF40, 0xFF2D9B, 0x1E50FF, 0xFF5A00, 0xFFE000)
+    val NEWJEANS_NAMES = arrayOf("Blanco", "Verde", "Rosa", "Azul", "Naranja", "Amarillo")
+    val NEWJEANS_UI = intArrayOf(0xFFFFFF, 0x5DE101, 0xFF5DFF, 0x6CAAFF, 0xFF9F45, 0xF6FF02)
+    val NEWJEANS = intArrayOf(0xFFFFFF, 0x3CFF00, 0xFF1ED2, 0x1E5AFF, 0xFF5A00, 0xFFE600)
 
     val MEMBER_NAMES = arrayOf("Minji", "Hanni", "Danielle", "Haerin", "Hyein")
-
     /** Minji azul, Hanni rosa, Danielle amarillo, Haerin verde, Hyein morado. */
-    val MEMBER_COLORS = intArrayOf(0x1E50FF, 0xFF2D9B, 0xFFE000, 0x00FF40, 0x9B30FF)
+    val MEMBER_UI = intArrayOf(0x6CAAFF, 0xFF5DFF, 0xF6FF02, 0x5DE101, 0xAC86FF)
+    val MEMBER_COLORS = intArrayOf(0x1E5AFF, 0xFF1ED2, 0xFFE600, 0x3CFF00, 0x8C3CFF)
 
     /**
      * Estilos del modo música:

@@ -37,6 +37,8 @@ class MusicService : Service() {
         const val EXTRA_DATA = "data"          // Intent de MediaProjection
         private const val CHANNEL = "musica"
         private const val NOTIF_ID = 7
+        private const val NOTIF_LOST_ID = 8
+        private const val CHANNEL_ALERT = "avisos"
         private const val SAMPLE_RATE = 44100
         private const val BLOCK = 1024
     }
@@ -111,6 +113,7 @@ class MusicService : Service() {
         if (running) return START_NOT_STICKY   // ya estaba activo
         running = true
         Bus.musicRunning = true
+        Bus.pausedByDisconnect = false
         Bus.message = if (internal) "Escuchando el audio del celular…" else "Escuchando el micrófono…"
         val analyzer = MusicAnalyzer(
             sampleRate = SAMPLE_RATE,
@@ -169,8 +172,15 @@ class MusicService : Service() {
             var lastB = -1000
             var silentSince = System.nanoTime()
             var warned = false
+            val lostAtStart = LightStick.lostCount
 
             while (running) {
+                if (LightStick.lostCount != lostAtStart) {
+                    Bus.pausedByDisconnect = true
+                    Bus.message = "Se desconectó tu lightstick. La música está en pausa."
+                    notifyLost()
+                    break
+                }
                 var n = 0
                 while (n < BLOCK && running) {
                     val got = rec.read(shorts, n, BLOCK - n)
@@ -232,8 +242,10 @@ class MusicService : Service() {
             projection = null
             Bus.musicRunning = false
             // devolver el lightstick al ultimo color puesto a mano
-            val m = LightStick.lastManual
-            LightStick.setLed(m[0], m[1], m[2], m[3])
+            if (LightStick.connected) {
+                val m = LightStick.lastManual
+                LightStick.setLed(m[0], m[1], m[2], m[3])
+            }
             stopSelf()
         }
     }
@@ -241,6 +253,30 @@ class MusicService : Service() {
     override fun onDestroy() {
         running = false
         super.onDestroy()
+    }
+
+    /** Aviso visible (con sonido/vibración) de que el lightstick se desconectó. */
+    private fun notifyLost() {
+        try {
+            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            nm.createNotificationChannel(
+                NotificationChannel(CHANNEL_ALERT, "Avisos del lightstick", NotificationManager.IMPORTANCE_HIGH)
+            )
+            val open = PendingIntent.getActivity(
+                this, 2,
+                Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                PendingIntent.FLAG_IMMUTABLE
+            )
+            val n = Notification.Builder(this, CHANNEL_ALERT)
+                .setContentTitle("Se desconectó tu lightstick")
+                .setContentText("El modo música está en pausa. Toca para reconectar.")
+                .setSmallIcon(android.R.drawable.stat_sys_warning)
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .build()
+            nm.notify(NOTIF_LOST_ID, n)
+        } catch (e: Exception) {
+        }
     }
 
     private fun buildNotification(): Notification {
