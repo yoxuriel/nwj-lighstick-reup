@@ -1,0 +1,299 @@
+package app.njsmusic
+
+import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
+import android.content.Context
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import java.util.LinkedList
+import java.util.UUID
+
+/** Estado compartido entre la pantalla y el servicio de musica. */
+object Bus {
+    @Volatile var musicRunning = false
+    @Volatile var r = 0
+    @Volatile var g = 0
+    @Volatile var b = 0
+    @Volatile var message = ""
+}
+
+class Found(val address: String, val name: String, var rssi: Int)
+
+/**
+ * Control del NewJeans Official Light Stick por Bluetooth LE.
+ *
+ * Protocolo (sacado de la app oficial): servicio 0001fe01, caracteristica 0001ff02,
+ * escritura con respuesta de 4 bytes [modo, R, G, B].
+ * Esta clase SOLO escribe en esa caracteristica (nunca en la de firmware/OTA).
+ */
+@SuppressLint("MissingPermission")
+object LightStick {
+    private val SVC: UUID = UUID.fromString("0001fe01-0000-1000-8000-00805f9800c4")
+    private val LED_CH: UUID = UUID.fromString("0001ff02-0000-1000-8000-00805f9800c4")
+    private val BATT_SVC: UUID = UUID.fromString("0000180f-0000-1000-8000-00805f9b34fb")
+    private val BATT_CH: UUID = UUID.fromString("00002a19-0000-1000-8000-00805f9b34fb")
+    private val INFO_SVC: UUID = UUID.fromString("0000180a-0000-1000-8000-00805f9b34fb")
+    private val MODEL_CH: UUID = UUID.fromString("00002a24-0000-1000-8000-00805f9b34fb")
+    private val FW_CH: UUID = UUID.fromString("00002a26-0000-1000-8000-00805f9b34fb")
+
+    @Volatile var status = "Desconectado"
+    @Volatile var connected = false
+    @Volatile var connecting = false
+    @Volatile var battery = -1
+    @Volatile var firmware = ""
+    @Volatile var model = ""
+
+    /** Ultimo color puesto a mano [modo, R, G, B]; se restaura al terminar el modo musica. */
+    @Volatile var lastManual = intArrayOf(1, 0, 0, 255)
+
+    private var appContext: Context? = null
+    private var adapter: BluetoothAdapter? = null
+    private val main = Handler(Looper.getMainLooper())
+
+    private val lock = Any()
+    private var gatt: BluetoothGatt? = null
+    private var ledChar: BluetoothGattCharacteristic? = null
+    private val reads = LinkedList<BluetoothGattCharacteristic>()
+    private var pending: ByteArray? = null
+    private var lastQueued: ByteArray? = null
+    private var busy = false
+    private var busySince = 0L
+
+    fun init(ctx: Context) {
+        appContext = ctx.applicationContext
+        val bm = ctx.applicationContext.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        adapter = bm.adapter
+    }
+
+    fun bluetoothOn(): Boolean = adapter?.isEnabled == true
+
+    fun infoLine(): String {
+        val parts = ArrayList<String>()
+        if (battery >= 0) parts.add("Batería $battery%")
+        if (firmware.isNotEmpty()) parts.add("Firmware $firmware")
+        if (model.isNotEmpty()) parts.add(model)
+        return parts.joinToString(" · ")
+    }
+
+    // ------------------------------------------------------------------ busqueda
+    private val found = LinkedHashMap<String, Found>()
+    private var scanning = false
+
+    private val scanCb = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult) {
+            val name = result.scanRecord?.deviceName ?: result.device.name ?: ""
+            val hasSvc = result.scanRecord?.serviceUuids?.any { it.uuid == SVC } == true
+            if (name.contains("NEWJEANS", ignoreCase = true) || hasSvc) {
+                found[result.device.address] =
+                    Found(result.device.address, if (name.isEmpty()) "Lightstick" else name, result.rssi)
+            }
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            scanning = false
+            status = "Error al buscar (código $errorCode)"
+        }
+    }
+
+    /** Busca durante [ms] milisegundos y entrega la lista (en el hilo principal). */
+    fun scan(ms: Long, done: (List<Found>) -> Unit) {
+        val scanner = adapter?.bluetoothLeScanner
+        if (scanner == null) {
+            status = "Bluetooth apagado"
+            done(emptyList())
+            return
+        }
+        if (scanning) return
+        found.clear()
+        scanning = true
+        status = "Buscando lightstick…"
+        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+        scanner.startScan(null, settings, scanCb)
+        main.postDelayed({
+            try {
+                scanner.stopScan(scanCb)
+            } catch (e: Exception) {
+            }
+            scanning = false
+            if (!connected && !connecting) status = "Desconectado"
+            done(found.values.sortedByDescending { it.rssi })
+        }, ms)
+    }
+
+    // ------------------------------------------------------------------ conexion
+    fun connect(address: String) {
+        val dev = adapter?.getRemoteDevice(address) ?: return
+        closeGatt()
+        battery = -1
+        firmware = ""
+        model = ""
+        connecting = true
+        connected = false
+        status = "Conectando…"
+        gatt = dev.connectGatt(appContext, false, callback, BluetoothDevice.TRANSPORT_LE)
+    }
+
+    fun disconnect() {
+        val g = gatt
+        if (g == null) {
+            connected = false
+            connecting = false
+            status = "Desconectado"
+            return
+        }
+        status = "Desconectando…"
+        g.disconnect()
+        // por si el sistema nunca avisa del cierre
+        main.postDelayed({
+            if (gatt === g) {
+                closeGatt()
+                status = "Desconectado"
+            }
+        }, 1500)
+    }
+
+    private fun closeGatt() {
+        val g = gatt
+        gatt = null
+        synchronized(lock) {
+            ledChar = null
+            reads.clear()
+            pending = null
+            lastQueued = null
+            busy = false
+        }
+        connected = false
+        connecting = false
+        try {
+            g?.close()
+        } catch (e: Exception) {
+        }
+    }
+
+    private val callback = object : BluetoothGattCallback() {
+        override fun onConnectionStateChange(g: BluetoothGatt, st: Int, newState: Int) {
+            if (g !== gatt) {
+                try { g.close() } catch (e: Exception) { }
+                return
+            }
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                status = "Conectado, preparando…"
+                try { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) } catch (e: Exception) { }
+                g.discoverServices()
+            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                val wasConnected = connected
+                closeGatt()
+                status = if (wasConnected) "Se desconectó el lightstick" else "No se pudo conectar (código $st). Inténtalo de nuevo."
+            }
+        }
+
+        override fun onServicesDiscovered(g: BluetoothGatt, st: Int) {
+            val c = g.getService(SVC)?.getCharacteristic(LED_CH)
+            if (st != BluetoothGatt.GATT_SUCCESS || c == null) {
+                status = "Este dispositivo no es un lightstick compatible"
+                g.disconnect()
+                return
+            }
+            synchronized(lock) {
+                ledChar = c
+                busy = false
+                reads.clear()
+                g.getService(BATT_SVC)?.getCharacteristic(BATT_CH)?.let { reads.add(it) }
+                g.getService(INFO_SVC)?.getCharacteristic(FW_CH)?.let { reads.add(it) }
+                g.getService(INFO_SVC)?.getCharacteristic(MODEL_CH)?.let { reads.add(it) }
+            }
+            connected = true
+            connecting = false
+            status = "Conectado a " + (g.device.name ?: "lightstick")
+            // igual que la app oficial: al conectar deja un color fijo (por defecto azul)
+            val m = lastManual
+            setLed(m[0], m[1], m[2], m[3])
+            pump()
+        }
+
+        private fun handleRead(c: BluetoothGattCharacteristic, v: ByteArray, st: Int) {
+            if (st == BluetoothGatt.GATT_SUCCESS) {
+                when (c.uuid) {
+                    BATT_CH -> if (v.isNotEmpty()) battery = v[0].toInt() and 0xFF
+                    FW_CH -> firmware = String(v).trim()
+                    MODEL_CH -> model = String(v).trim()
+                    else -> {}
+                }
+            }
+            synchronized(lock) { busy = false }
+            pump()
+        }
+
+        // Android 13+ llama a esta version...
+        override fun onCharacteristicRead(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray, st: Int) {
+            handleRead(c, value, st)
+        }
+
+        // ...y las anteriores a esta.
+        @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+        override fun onCharacteristicRead(g: BluetoothGatt, c: BluetoothGattCharacteristic, st: Int) {
+            if (Build.VERSION.SDK_INT < 33) handleRead(c, c.value ?: ByteArray(0), st)
+        }
+
+        override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, st: Int) {
+            synchronized(lock) { busy = false }
+            pump()
+        }
+    }
+
+    // ------------------------------------------------------------------ envio de colores
+    /** Pone el color. Si hay una escritura en curso, solo se guarda la ultima (la mas reciente gana). */
+    fun setLed(mode: Int, r: Int, g: Int, b: Int) {
+        val msg = byteArrayOf(
+            mode.coerceIn(1, 4).toByte(),
+            r.coerceIn(0, 255).toByte(),
+            g.coerceIn(0, 255).toByte(),
+            b.coerceIn(0, 255).toByte()
+        )
+        synchronized(lock) {
+            if (lastQueued != null && lastQueued!!.contentEquals(msg) && pending == null) return
+            pending = msg
+            lastQueued = msg
+        }
+        pump()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun pump() {
+        synchronized(lock) {
+            val g = gatt ?: return
+            if (busy && SystemClock.elapsedRealtime() - busySince > 1500) busy = false // perdio un aviso
+            while (!busy) {
+                val rd = reads.poll()
+                if (rd != null) {
+                    busy = g.readCharacteristic(rd)
+                    busySince = SystemClock.elapsedRealtime()
+                    continue
+                }
+                val p = pending ?: return
+                val c = ledChar ?: return
+                pending = null
+                busy = if (Build.VERSION.SDK_INT >= 33) {
+                    g.writeCharacteristic(c, p, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == 0
+                } else {
+                    c.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                    c.value = p
+                    g.writeCharacteristic(c)
+                }
+                busySince = SystemClock.elapsedRealtime()
+                return
+            }
+        }
+    }
+}
