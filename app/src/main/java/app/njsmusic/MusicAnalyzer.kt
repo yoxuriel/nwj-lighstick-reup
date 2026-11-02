@@ -11,16 +11,21 @@ import kotlin.math.sqrt
 /** Paletas de colores (RGB como 0xRRGGBB). */
 object Palettes {
     /** Los 6 colores del lightstick: blanco, verde, rosa, azul, naranja, amarillo. */
-    val DEFAULT = intArrayOf(0xFFFFFF, 0x00FF40, 0xFF2D9B, 0x1E50FF, 0xFF5A00, 0xFFE000)
+    val NEWJEANS = intArrayOf(0xFFFFFF, 0x00FF40, 0xFF2D9B, 0x1E50FF, 0xFF5A00, 0xFFE000)
 
-    /** Integrantes: Minji azul, Hanni rosa, Danielle amarillo, Haerin verde, Hyein morado. */
-    val MEMBERS = intArrayOf(0x1E50FF, 0xFF2D9B, 0xFFE000, 0x00FF40, 0x9B30FF)
+    val MEMBER_NAMES = arrayOf("Minji", "Hanni", "Danielle", "Haerin", "Hyein")
 
-    /** 0 = arcoiris (sin paleta), 1 = los 6 colores, 2 = integrantes. */
+    /** Minji azul, Hanni rosa, Danielle amarillo, Haerin verde, Hyein morado. */
+    val MEMBER_COLORS = intArrayOf(0x1E50FF, 0xFF2D9B, 0xFFE000, 0x00FF40, 0x9B30FF)
+
+    /**
+     * Estilos del modo música:
+     * 0 = Arcoíris, 1 = NewJeans (los 6 colores), 2..6 = una integrante (un solo color).
+     */
     fun byId(id: Int): IntArray? = when (id) {
-        1 -> DEFAULT
-        2 -> MEMBERS
-        else -> null
+        0 -> null
+        in 2..6 -> intArrayOf(MEMBER_COLORS[id - 2])
+        else -> NEWJEANS
     }
 }
 

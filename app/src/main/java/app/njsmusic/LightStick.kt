@@ -54,6 +54,9 @@ object LightStick {
     @Volatile var firmware = ""
     @Volatile var model = ""
 
+    /** Dirección del lightstick conectado (o al que se está conectando). */
+    @Volatile var address: String? = null
+
     /** Ultimo color puesto a mano [modo, R, G, B]; se restaura al terminar el modo musica. */
     @Volatile var lastManual = intArrayOf(1, 0, 0, 255)
 
@@ -89,14 +92,22 @@ object LightStick {
     // ------------------------------------------------------------------ busqueda
     private val found = LinkedHashMap<String, Found>()
     private var scanning = false
+    private var lastUpdate = 0L
 
     private val scanCb = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val name = result.scanRecord?.deviceName ?: result.device.name ?: ""
             val hasSvc = result.scanRecord?.serviceUuids?.any { it.uuid == SVC } == true
             if (name.contains("NEWJEANS", ignoreCase = true) || hasSvc) {
+                val isNew = !found.containsKey(result.device.address)
                 found[result.device.address] =
                     Found(result.device.address, if (name.isEmpty()) "Lightstick" else name, result.rssi)
+                val cb = onScanUpdate
+                val now = SystemClock.elapsedRealtime()
+                if (cb != null && (isNew || now - lastUpdate > 700)) {
+                    lastUpdate = now
+                    cb(currentList())
+                }
             }
         }
 
@@ -106,29 +117,63 @@ object LightStick {
         }
     }
 
-    /** Busca durante [ms] milisegundos y entrega la lista (en el hilo principal). */
-    fun scan(ms: Long, done: (List<Found>) -> Unit) {
+    private var scanStopper: Runnable? = null
+    private var activeScanner: android.bluetooth.le.BluetoothLeScanner? = null
+    private var onScanUpdate: ((List<Found>) -> Unit)? = null
+
+    private fun currentList(): List<Found> = found.values.sortedByDescending { it.rssi }
+
+    /**
+     * Busca durante [ms] milisegundos. [onUpdate] recibe la lista cada vez que aparece o cambia
+     * un lightstick; [done] recibe la lista final. Todo en el hilo principal.
+     */
+    fun scan(ms: Long, onUpdate: (List<Found>) -> Unit, done: (List<Found>) -> Unit) {
         val scanner = adapter?.bluetoothLeScanner
         if (scanner == null) {
             status = "Bluetooth apagado"
             done(emptyList())
             return
         }
-        if (scanning) return
+        stopScan()
         found.clear()
         scanning = true
-        status = "Buscando lightstick…"
+        activeScanner = scanner
+        onScanUpdate = onUpdate
+        if (!connected && !connecting) status = "Buscando lightsticks…"
         val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
-        scanner.startScan(null, settings, scanCb)
-        main.postDelayed({
+        try {
+            scanner.startScan(null, settings, scanCb)
+        } catch (e: Exception) {
+            scanning = false
+            status = "No se pudo buscar: ${e.message}"
+            done(emptyList())
+            return
+        }
+        val stopper = Runnable {
+            stopScan()
+            done(currentList())
+        }
+        scanStopper = stopper
+        main.postDelayed(stopper, ms)
+    }
+
+    /** Detiene la búsqueda sin avisar a [done]. */
+    fun stopScan() {
+        scanStopper?.let { main.removeCallbacks(it) }
+        scanStopper = null
+        onScanUpdate = null
+        val sc = activeScanner
+        activeScanner = null
+        if (sc != null) {
             try {
-                scanner.stopScan(scanCb)
+                sc.stopScan(scanCb)
             } catch (e: Exception) {
             }
+        }
+        if (scanning) {
             scanning = false
             if (!connected && !connecting) status = "Desconectado"
-            done(found.values.sortedByDescending { it.rssi })
-        }, ms)
+        }
     }
 
     // ------------------------------------------------------------------ conexion
@@ -140,6 +185,7 @@ object LightStick {
         model = ""
         connecting = true
         connected = false
+        this.address = address
         status = "Conectando…"
         gatt = dev.connectGatt(appContext, false, callback, BluetoothDevice.TRANSPORT_LE)
     }
@@ -175,6 +221,7 @@ object LightStick {
         }
         connected = false
         connecting = false
+        address = null
         try {
             g?.close()
         } catch (e: Exception) {
