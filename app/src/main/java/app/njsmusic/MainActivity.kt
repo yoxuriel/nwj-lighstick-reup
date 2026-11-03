@@ -181,6 +181,7 @@ class MainActivity : Activity() {
         navLp.setMargins(dp(14), 0, dp(14), dp(12))
         root.addView(nav, navLp)
         setContentView(root)
+        unclip(root)
         updateChoices()
     }
 
@@ -195,6 +196,21 @@ class MainActivity : Activity() {
     }
 
     private fun column(): LinearLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+    /**
+     * Android recorta por defecto lo que sobresale de cada contenedor (stickers en las esquinas,
+     * stickers que se balancean, sombras). Se desactiva en toda la interfaz, excepto en las áreas
+     * con desplazamiento, que sí deben recortar para no encimarse con el encabezado o la barra.
+     */
+    private fun unclip(v: View) {
+        if (v is ViewGroup) {
+            if (v !is ScrollView) {
+                v.clipChildren = false
+                v.clipToPadding = false
+            }
+            for (i in 0 until v.childCount) unclip(v.getChildAt(i))
+        }
+    }
 
     private fun LinearLayout.addGap(v: View, topDp: Int = 16) {
         val lp = LinearLayout.LayoutParams(-1, -2)
@@ -1114,6 +1130,7 @@ class MainActivity : Activity() {
         ov.isClickable = true
         ov.addView(sv, FrameLayout.LayoutParams(-1, -1))
         root.addView(ov, FrameLayout.LayoutParams(-1, -1))
+        unclip(ov)
         welcome = ov
         ov.alpha = 0f
         ov.animate().alpha(1f).setDuration(220).start()
