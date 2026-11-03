@@ -316,8 +316,8 @@ class StickerText(ctx: Context) : TextView(ctx) {
     }
 
     private fun applyPad() {
-        val h = (max(outline, context.dpf(2f)) + context.dpf(3f)).toInt()
-        val v = (max(outline, context.dpf(1f)) + context.dpf(1f)).toInt()
+        val h = (max(outline, context.dpf(2f)) + context.dpf(4f)).toInt()
+        val v = (max(outline, context.dpf(1f)) + context.dpf(2f)).toInt()
         super.setPadding(h, v, h, v)
     }
 
@@ -326,23 +326,40 @@ class StickerText(ctx: Context) : TextView(ctx) {
         super.setPadding(left, top, right, bottom)
     }
 
+    /**
+     * Se dibuja el texto directamente (sin el recorte interno de TextView, que cortaba el contorno
+     * en los bordes): primero el contorno negro y encima el relleno degradado.
+     */
     override fun onDraw(canvas: Canvas) {
+        val lay = layout
+        if (lay == null) {
+            super.onDraw(canvas)
+            return
+        }
         val p = paint
+        val availH = height - extendedPaddingTop - extendedPaddingBottom
+        val dy = when (gravity and Gravity.VERTICAL_GRAVITY_MASK) {
+            Gravity.CENTER_VERTICAL -> (availH - lay.height) / 2f
+            Gravity.BOTTOM -> (availH - lay.height).toFloat()
+            else -> 0f
+        }
+        canvas.save()
+        canvas.translate(compoundPaddingLeft.toFloat(), extendedPaddingTop + dy)
         if (outline > 0f) {
             p.shader = null
             p.style = Paint.Style.STROKE
             p.strokeWidth = outline * 2f
             p.strokeJoin = Paint.Join.ROUND
-            super.onDraw(canvas)
+            p.color = Th.INK
+            lay.draw(canvas)
         }
         p.style = Paint.Style.FILL
         p.strokeWidth = 0f
-        p.shader = LinearGradient(
-            0f, paddingTop.toFloat(), 0f, (height - paddingBottom).toFloat(),
-            fillTop, fillBottom, Shader.TileMode.CLAMP
-        )
-        super.onDraw(canvas)
+        p.color = Color.BLACK
+        p.shader = LinearGradient(0f, 0f, 0f, lay.height.toFloat(), fillTop, fillBottom, Shader.TileMode.CLAMP)
+        lay.draw(canvas)
         p.shader = null
+        canvas.restore()
     }
 }
 
@@ -488,6 +505,20 @@ class HalftoneSky(ctx: Context) : View(ctx) {
         }
         if (running) postInvalidateDelayed(40)
     }
+}
+
+/** Logo "RE UP!" (el "!" es un lightstick). */
+fun Context.reupLogo(): android.widget.ImageView = android.widget.ImageView(this).apply {
+    setImageResource(R.drawable.reup_logo)
+    scaleType = android.widget.ImageView.ScaleType.FIT_START
+    adjustViewBounds = true
+}
+
+/** Logo: el conejo (imagen del proyecto). */
+fun Context.bunnyLogo(): android.widget.ImageView = android.widget.ImageView(this).apply {
+    setImageResource(R.drawable.bunny_logo)
+    scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+    adjustViewBounds = true
 }
 
 // =====================================================================================
@@ -1027,7 +1058,7 @@ class NavBar(ctx: Context, labels: List<String>, private val onSelect: (Int) -> 
             val ic = NavIcon(ctx, i)
             item.addView(ic, LayoutParams(ctx.dp(22), ctx.dp(22)))
             val tv = ctx.stickerText(t, 15f, intArrayOf(Th.INK, Th.INK), 0f)
-            tv.setPadding(ctx.dp(5), ctx.dp(3), ctx.dp(4), ctx.dp(3))
+            tv.setPadding(ctx.dp(6), ctx.dp(5), ctx.dp(6), ctx.dp(5))
             item.addView(tv)
             item.isClickable = true
             item.setOnClickListener { onSelect(i) }

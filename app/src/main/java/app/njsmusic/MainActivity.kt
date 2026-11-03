@@ -239,19 +239,34 @@ class MainActivity : Activity() {
     // =================================================================== encabezado
     private fun buildHeader(): View {
         val frame = FrameLayout(this)
+        val outer = LinearLayout(this)
+        outer.orientation = LinearLayout.HORIZONTAL
+        outer.isBaselineAligned = false
+        outer.gravity = Gravity.CENTER_VERTICAL
+        outer.setPadding(dp(12), dp(10), dp(14), dp(6))
+        val logo = bunnyLogo()
+        logo.wobble(4f, 2200)
+        outer.addView(logo, LinearLayout.LayoutParams(dp(62), dp(66)))
         val col = column()
-        col.setPadding(dp(18), dp(12), dp(18), dp(6))
+        col.setPadding(dp(6), 0, 0, 0)
+        outer.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
 
-        col.addView(StarText(this, "NEWJEANS", Th.INK), LinearLayout.LayoutParams(-1, -2).apply { rightMargin = dp(70) })
+        val titleRow = LinearLayout(this)
+        titleRow.orientation = LinearLayout.HORIZONTAL
+        titleRow.isBaselineAligned = false
+        titleRow.gravity = Gravity.CENTER_VERTICAL
+        titleRow.addView(StarText(this, "NWJ", Th.INK), LinearLayout.LayoutParams(dp(74), -2))
+        titleRow.addView(reupLogo(), LinearLayout.LayoutParams(0, dp(44), 1f).apply { leftMargin = dp(8); rightMargin = dp(36) })
+        col.addView(titleRow, LinearLayout.LayoutParams(-1, -2))
 
         val sub = LinearLayout(this)
         sub.orientation = LinearLayout.HORIZONTAL
         sub.isBaselineAligned = false
         sub.gravity = Gravity.CENTER_VERTICAL
-        val w1 = stickerText("Lightstick", 23f, Th.G_BLUE, 3f)
-        val w2 = stickerText("REUP!", 23f, Th.G_PINK, 3f)
+        val w1 = stickerText("light", 19f, Th.G_BLUE, 2.6f)
+        val w2 = stickerText("stick", 19f, Th.G_PINK, 2.6f)
         val w3 = StickerShape(this, "sparkle", Th.G_YELLOW[0], Th.G_YELLOW[1])
-        w3.layoutParams = LinearLayout.LayoutParams(dp(22), dp(22))
+        w3.layoutParams = LinearLayout.LayoutParams(dp(20), dp(20))
         val words = LinearLayout(this)
         words.orientation = LinearLayout.HORIZONTAL
         words.isBaselineAligned = false
@@ -280,7 +295,7 @@ class MainActivity : Activity() {
         chip.addView(statusText)
         sub.addView(chip)
         col.addView(sub)
-        frame.addView(col, FrameLayout.LayoutParams(-1, -2))
+        frame.addView(outer, FrameLayout.LayoutParams(-1, -2))
 
         place(frame, sticker("star", Th.G_BLUE, 40, 10f, 1900), Gravity.TOP or Gravity.END, r = 14, t = 4)
         place(frame, sticker("sparkle", Th.G_YELLOW, 26, 14f, 1300), Gravity.TOP or Gravity.END, r = 4, t = 40)
@@ -604,7 +619,13 @@ class MainActivity : Activity() {
 
         val about = card()
         about.addView(cardTitle(tr("about")))
-        about.addView(stickerText("NewJeans Lightstick REUP!", 19f, Th.G_BLUE, 2.5f))
+        val aboutHead = LinearLayout(this)
+        aboutHead.orientation = LinearLayout.HORIZONTAL
+        aboutHead.isBaselineAligned = false
+        aboutHead.gravity = Gravity.CENTER_VERTICAL
+        aboutHead.addView(bunnyLogo(), LinearLayout.LayoutParams(dp(54), dp(58)))
+        aboutHead.addView(reupLogo(), LinearLayout.LayoutParams(0, dp(48), 1f).apply { leftMargin = dp(8) })
+        about.addView(aboutHead)
         about.addGap(label(tr("about_body"), 13.5f, false, Th.INK), 6)
         about.addGap(stickerText(tr("made_by"), 17f, Th.G_PINK, 2.5f), 10)
         about.addGap(label(tr("fonts_credit"), 12f, false, Th.INK_SOFT), 8)
@@ -1028,13 +1049,19 @@ class MainActivity : Activity() {
         val top = FrameLayout(this)
         val titles = column()
         titles.gravity = Gravity.CENTER_HORIZONTAL
-        titles.addView(StarText(this, "NEWJEANS", Th.INK), LinearLayout.LayoutParams(-1, -2))
+        val big = bunnyLogo()
+        big.wobble(5f, 2000)
+        titles.addView(big, LinearLayout.LayoutParams(dp(150), dp(160)))
+        titles.addView(StarText(this, "NWJ", Th.INK), LinearLayout.LayoutParams(dp(130), -2).apply { topMargin = dp(8) })
+        val wl = reupLogo()
+        wl.scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+        titles.addView(wl, LinearLayout.LayoutParams(-1, dp(96)).apply { topMargin = dp(6) })
         val words = LinearLayout(this)
         words.orientation = LinearLayout.HORIZONTAL
         words.isBaselineAligned = false
         words.gravity = Gravity.CENTER
-        words.addView(stickerText("Lightstick", 28f, Th.G_BLUE, 3.2f))
-        words.addView(stickerText("REUP!", 28f, Th.G_PINK, 3.2f))
+        words.addView(stickerText("light", 24f, Th.G_BLUE, 3f))
+        words.addView(stickerText("stick", 24f, Th.G_PINK, 3f))
         words.rotation = -3f
         titles.addView(words, LinearLayout.LayoutParams(-1, -2))
         top.addView(titles, FrameLayout.LayoutParams(-1, -2))
