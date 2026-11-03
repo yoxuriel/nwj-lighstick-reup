@@ -35,12 +35,14 @@ class MusicService : Service() {
         const val EXTRA_MINB = "minb"          // brillo minimo 0..1
         const val EXTRA_CODE = "code"          // resultCode de MediaProjection
         const val EXTRA_DATA = "data"          // Intent de MediaProjection
+        const val EXTRA_SONG_BPM = "songBpm"   // BPM de la canción elegida (0 = detectar)
+        const val EXTRA_LEAD = "lead"          // adelanto de los destellos en segundos
         private const val CHANNEL = "musica"
         private const val NOTIF_ID = 7
         private const val NOTIF_LOST_ID = 8
         private const val CHANNEL_ALERT = "avisos"
         private const val SAMPLE_RATE = 44100
-        private const val BLOCK = 1024
+        private const val BLOCK = 512
     }
 
     @Volatile private var running = false
@@ -117,10 +119,14 @@ class MusicService : Service() {
         Bus.message = if (internal) "Escuchando el audio del celular…" else "Escuchando el micrófono…"
         val analyzer = MusicAnalyzer(
             sampleRate = SAMPLE_RATE,
-            block = BLOCK,
+            hopSize = BLOCK,
             minBrightness = minB,
-            palette = Palettes.byId(paletteId)
+            palette = Palettes.byId(paletteId),
+            songBpm = intent.getFloatExtra(EXTRA_SONG_BPM, 0f),
+            leadSec = intent.getFloatExtra(EXTRA_LEAD, 0.08f).toDouble()
         )
+        Bus.bpm = 0f
+        Bus.locked = false
         val t = Thread { runLoop(analyzer, internal, mode) }
         worker = t
         t.start()
@@ -213,12 +219,14 @@ class MusicService : Service() {
                     }
                 }
 
-                val out = analyzer.process(floats, now / 1e9)
+                val out = analyzer.process(floats, BLOCK, now / 1e9)
                 Bus.r = out.r
                 Bus.g = out.g
                 Bus.b = out.b
-                if (colorDiff(out.r, out.g, out.b, lastR, lastG, lastB) >= 14) {
-                    LightStick.setLed(mode, out.r, out.g, out.b)
+                Bus.bpm = out.bpm
+                Bus.locked = out.locked
+                if (out.beat || colorDiff(out.r, out.g, out.b, lastR, lastG, lastB) >= 14) {
+                    LightStick.setLed(1, out.r, out.g, out.b, urgent = out.beat)
                     lastR = out.r
                     lastG = out.g
                     lastB = out.b

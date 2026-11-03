@@ -38,7 +38,9 @@ class MainActivity : Activity() {
     // ---- estado
     private var baseColor = 0x1E5AFF   // color LED a brillo completo
     private var brightness = 1f        // 0.03..1
-    private var mode = 1               // modo del lightstick 1..4
+    private var effect = 0             // 0 fijo, 1 destello, 2 destello x2, 3 burbujas
+    private var songIdx = -1           // -1 = detectar BPM solo
+    private var lead = 0.08f           // adelanto de los destellos (s)
     private var paletteId = 1          // 0 arcoíris, 1 NewJeans, 2..6 integrantes
     private var sourceId = 0           // 0 micrófono, 1 audio del celular
     private var minBright = 0.04f
@@ -46,6 +48,7 @@ class MainActivity : Activity() {
     private var afterBle: (() -> Unit)? = null
     private var pendingSave: Pair<String, String>? = null
     private var lastConnState = -1
+    private var wasConnected = false
     private var identifying = false
     private var seenLost = 0
     private var resumeMusicOnConnect = false
@@ -69,6 +72,9 @@ class MainActivity : Activity() {
     private lateinit var musicActiveNote: TextView
     private lateinit var playBtn: PlayButton
     private lateinit var musicMsg: TextView
+    private lateinit var bpmText: StickerText
+    private lateinit var bpmSub: TextView
+    private lateinit var songBtn: TextView
     private lateinit var segMic: TextView
     private lateinit var segInternal: TextView
     private lateinit var savedList: LinearLayout
@@ -120,18 +126,24 @@ class MainActivity : Activity() {
     private fun loadSettings() {
         baseColor = store.getInt("ledColor", 0x1E5AFF)
         brightness = store.getFloat("brightness", 1f)
-        mode = store.getInt("mode", 1).coerceIn(1, 4)
+        effect = store.getInt("effect", 0).coerceIn(0, 3)
+        Effects.speed = store.getFloat("speed", 0.35f)
+        songIdx = store.getInt("song", -1).coerceIn(-1, Songs.LIST.size - 1)
+        lead = store.getFloat("lead", 0.08f)
         paletteId = store.getInt("palette", 1).coerceIn(0, 6)
         sourceId = store.getInt("source", 0).coerceIn(0, 1)
         minBright = store.getFloat("minBright", 0.04f)
         val c = manualRgb()
-        LightStick.lastManual = intArrayOf(mode, c[0], c[1], c[2])
+        LightStick.lastManual = intArrayOf(1, c[0], c[1], c[2])
     }
 
     private fun saveSettings() {
         store.putInt("ledColor", baseColor)
         store.putFloat("brightness", brightness)
-        store.putInt("mode", mode)
+        store.putInt("effect", effect)
+        store.putFloat("speed", Effects.speed)
+        store.putInt("song", songIdx)
+        store.putFloat("lead", lead)
         store.putInt("palette", paletteId)
         store.putInt("source", sourceId)
         store.putFloat("minBright", minBright)
@@ -218,14 +230,15 @@ class MainActivity : Activity() {
         val col = column()
         col.setPadding(dp(18), dp(12), dp(18), dp(6))
 
-        col.addView(StarText(this, "LIGHT STICK", Th.INK), LinearLayout.LayoutParams(-1, -2).apply { rightMargin = dp(46) })
+        col.addView(StarText(this, "NEWJEANS", Th.INK), LinearLayout.LayoutParams(-1, -2).apply { rightMargin = dp(70) })
 
         val sub = LinearLayout(this)
         sub.orientation = LinearLayout.HORIZONTAL
         sub.gravity = Gravity.CENTER_VERTICAL
-        val w1 = stickerText("color", 22f, Th.G_PINK, 3f)
-        val w2 = stickerText("&", 20f, Th.G_YELLOW, 3f)
-        val w3 = stickerText("music", 22f, Th.G_GREEN, 3f)
+        val w1 = stickerText("Lightstick", 23f, Th.G_BLUE, 3f)
+        val w2 = stickerText("REUP!", 23f, Th.G_PINK, 3f)
+        val w3 = StickerShape(this, "sparkle", Th.G_YELLOW[0], Th.G_YELLOW[1])
+        w3.layoutParams = LinearLayout.LayoutParams(dp(22), dp(22))
         val words = LinearLayout(this)
         words.orientation = LinearLayout.HORIZONTAL
         words.gravity = Gravity.CENTER_VERTICAL
@@ -334,16 +347,16 @@ class MainActivity : Activity() {
 
         val fxFrame = FrameLayout(this)
         val fxCard = card()
-        fxCard.addView(cardTitle("EFECTO", "Los 4 efectos de la app oficial"))
+        fxCard.addView(cardTitle("EFECTO", "Con velocidad a tu gusto"))
         val fx = listOf(
-            EffectCard(this, 0, "Encendido", 1),
-            EffectCard(this, 1, "Destello x2", 4),
-            EffectCard(this, 2, "Destello", 2),
+            EffectCard(this, 0, "Fijo", 0),
+            EffectCard(this, 2, "Destello", 1),
+            EffectCard(this, 1, "Destello x2", 2),
             EffectCard(this, 3, "Burbujas", 3)
         )
         for (c in fx) {
             c.setOnClickListener {
-                mode = c.mode
+                effect = c.mode
                 updateChoices()
                 sendManual()
             }
@@ -351,6 +364,15 @@ class MainActivity : Activity() {
         }
         fxCard.addView(row(fx[0], fx[1], gapDp = 5))
         fxCard.addView(row(fx[2], fx[3], gapDp = 5))
+        val spHead = LinearLayout(this)
+        spHead.orientation = LinearLayout.HORIZONTAL
+        spHead.addView(pixelTitle("VELOCIDAD", 14f), LinearLayout.LayoutParams(0, -2, 1f))
+        spHead.addView(label("lento ← → rápido", 12.5f, false, Th.INK_SOFT))
+        fxCard.addGap(spHead, 12)
+        val speedSlider = PillSlider(this) { v -> Effects.speed = v }
+        speedSlider.colors = intArrayOf(0xFFE2D8FF.toInt(), 0xFFFF7AD9.toInt())
+        speedSlider.value = Effects.speed
+        fxCard.addView(speedSlider, LinearLayout.LayoutParams(-1, dp(44)))
         fxFrame.addView(fxCard, FrameLayout.LayoutParams(-1, -2))
         place(fxFrame, sticker("sparkle", Th.G_BLUE, 34, 12f, 1500), Gravity.TOP or Gravity.END, r = 14, t = -8)
         manualBlock.addGap(fxFrame)
@@ -385,6 +407,15 @@ class MainActivity : Activity() {
         place(stage, s1, Gravity.BOTTOM or Gravity.START, l = 12, b = 6)
         bouncers.addAll(listOf(n1, n2, n3, s1))
         hero.addView(stage, LinearLayout.LayoutParams(-1, dp(230)))
+        val bpmRow = LinearLayout(this)
+        bpmRow.orientation = LinearLayout.HORIZONTAL
+        bpmRow.gravity = Gravity.CENTER_VERTICAL
+        bpmText = stickerText("— BPM", 26f, Th.G_YELLOW, 3f)
+        bpmRow.addView(bpmText)
+        bpmSub = label("", 13.5f, true, Th.INK_SOFT)
+        bpmSub.setPadding(dp(8), 0, 0, 0)
+        bpmRow.addView(bpmSub)
+        hero.addView(bpmRow)
         musicMsg = chatBubble("Elige un estilo y toca ▶")
         val msgLp = LinearLayout.LayoutParams(-2, -2)
         msgLp.topMargin = dp(6)
@@ -435,16 +466,31 @@ class MainActivity : Activity() {
         )
         col.addGap(src)
 
+        val songCard = card()
+        songCard.addView(cardTitle("CANCIÓN", "Opcional: elegirla fija el tempo y ayuda con mucho ruido"))
+        songBtn = softButton(songLabel()) { openSongPicker() }
+        songCard.addView(songBtn)
+        val syncHead = LinearLayout(this)
+        syncHead.orientation = LinearLayout.HORIZONTAL
+        syncHead.addView(pixelTitle("SINCRONÍA", 14f), LinearLayout.LayoutParams(0, -2, 1f))
+        syncHead.addView(label("adelanto 0 → 250 ms", 12.5f, false, Th.INK_SOFT))
+        songCard.addGap(syncHead, 14)
+        val syncSlider = PillSlider(this) { v -> lead = v * 0.25f }
+        syncSlider.colors = intArrayOf(0xFFDDF6FF.toInt(), 0xFF22C3FF.toInt())
+        syncSlider.value = lead / 0.25f
+        songCard.addView(syncSlider, LinearLayout.LayoutParams(-1, dp(44)))
+        songCard.addGap(
+            label("Si las luces llegan tarde respecto a la música, mueve a la derecha. Se aplica al iniciar.", 13f, false, Th.INK_SOFT),
+            8
+        )
+        col.addGap(songCard)
+
         val minCard = card()
         minCard.addView(cardTitle("BRILLO MÍNIMO", "Para que no se apague en los silencios"))
         val minSlider = PillSlider(this) { v -> minBright = v * 0.4f }
         minSlider.colors = intArrayOf(0xFF1B1F3A.toInt(), 0xFFB9C8FF.toInt())
         minSlider.value = minBright / 0.4f
         minCard.addView(minSlider, LinearLayout.LayoutParams(-1, dp(44)))
-        minCard.addGap(
-            label("Durante la música se usa el efecto elegido en Luz (recomendado: Encendido).", 13f, false, Th.INK_SOFT),
-            10
-        )
         col.addGap(minCard)
         return col
     }
@@ -488,7 +534,8 @@ class MainActivity : Activity() {
             "¿Y si se desconecta?" to true,
             "Te aviso, pauso la música y con \"Reconectar\" sigue sola." to false,
             "Si \"Este celular\" no reacciona, la app que suena bloquea la captura: usa el micrófono." to false,
-            "En Realme, si la música se corta con la pantalla apagada: Ajustes → Batería → esta app → permitir en segundo plano." to false
+            "Si la música se corta con la pantalla apagada, quita las restricciones de batería a esta app (Ajustes → Apps → esta app → Batería → Sin restricciones; el nombre cambia según la marca)." to false,
+            "¿Las luces van tarde? En Música → Sincronía, mueve el control a la derecha." to false
         )
         for ((m, mine) in msgs) {
             val b = chatBubble(m, mine)
@@ -508,16 +555,19 @@ class MainActivity : Activity() {
 
         val about = card()
         about.addView(cardTitle("ACERCA DE"))
-        about.addView(
+        about.addView(stickerText("NewJeans Lightstick REUP!", 19f, Th.G_BLUE, 2.5f))
+        about.addGap(
             label(
-                "App personal, no oficial, para el NewJeans Official Light Stick.\n" +
-                    "Solo escribe en la función de color/efecto (la misma que usa la app oficial); " +
-                    "nunca toca la actualización de firmware.\n\n" +
-                    "Los nombres de los efectos siguen los íconos de la app oficial.\n" +
-                    "Fuentes: Fredoka, Pixelify Sans y Silkscreen (SIL Open Font License).",
-                13f, false, Th.INK_SOFT
-            )
+                "App NO oficial para el NewJeans Official Light Stick. No está afiliada a ADOR ni a HYBE.\n\n" +
+                    "Qué hace: controla el color, el brillo y efectos con velocidad ajustable; " +
+                    "convierte la música en luz siguiendo el ritmo (BPM) con estilos Arcoíris, NewJeans " +
+                    "y uno por integrante; recuerda tu lightstick para encontrarlo entre muchos y te avisa si se desconecta.\n\n" +
+                    "Solo usa la función de color del lightstick (la misma que la app oficial) y nunca toca su firmware.",
+                13.5f, false, Th.INK
+            ), 6
         )
+        about.addGap(stickerText("Creada por @UriEz", 17f, Th.G_PINK, 2.5f), 10)
+        about.addGap(label("Fuentes: Fredoka, Pixelify Sans y Silkscreen (SIL Open Font License).", 12f, false, Th.INK_SOFT), 8)
         col.addGap(about)
         return col
     }
@@ -607,6 +657,10 @@ class MainActivity : Activity() {
             }
         )
 
+        // al quedar conectado, retomar el color/efecto elegido
+        if (conn && !wasConnected && !music) sendManual()
+        wasConnected = conn
+
         val state = if (conn || connecting) 1 else 0
         if (state != lastConnState) {
             lastConnState = state
@@ -667,6 +721,13 @@ class MainActivity : Activity() {
         musicOrb.color = if (music) live else previewColor()
         playBtn.playing = music
         musicMsg.text = if (Bus.message.isNotEmpty()) Bus.message else "Elige un estilo y toca ▶"
+        if (music && Bus.bpm > 0f) {
+            bpmText.text = "${Bus.bpm.toInt()} BPM"
+            bpmSub.text = if (Bus.locked) "♪ en ritmo" else "buscando el ritmo…"
+        } else {
+            bpmText.text = if (songIdx >= 0) "${Songs.LIST[songIdx].second.toInt()} BPM" else "— BPM"
+            bpmSub.text = if (music) "escuchando…" else if (songIdx >= 0) Songs.LIST[songIdx].first else "se detecta solo"
+        }
         manualBlock.alpha = if (music) 0.4f else 1f
         musicActiveNote.visibility = if (music) View.VISIBLE else View.GONE
 
@@ -689,7 +750,7 @@ class MainActivity : Activity() {
     }
 
     private fun updateChoices() {
-        for (c in effectCards) c.setChosen(c.mode == mode)
+        for (c in effectCards) c.setChosen(c.mode == effect)
         styleCards.forEachIndexed { i, c -> c.setChosen(i == paletteId) }
         for (b in bubbles) b.chosen = b.led == baseColor
         if (::segMic.isInitialized) {
@@ -733,8 +794,8 @@ class MainActivity : Activity() {
 
     private fun sendManual() {
         val c = manualRgb()
-        LightStick.lastManual = intArrayOf(mode, c[0], c[1], c[2])
-        if (!Bus.musicRunning && !identifying) LightStick.setLed(mode, c[0], c[1], c[2])
+        LightStick.lastManual = intArrayOf(1, c[0], c[1], c[2])
+        Effects.apply(effect, c[0], c[1], c[2])
     }
 
     /** Hace parpadear el lightstick conectado para reconocerlo. */
@@ -749,6 +810,7 @@ class MainActivity : Activity() {
         }
         if (identifying) return
         identifying = true
+        Effects.paused = true
         val seq = intArrayOf(0xFF1ED2, 0x000000, 0x1E5AFF, 0x000000, 0xFF1ED2, 0x000000, 0x1E5AFF, 0x000000)
         seq.forEachIndexed { i, c ->
             ui.postDelayed({
@@ -757,8 +819,8 @@ class MainActivity : Activity() {
         }
         ui.postDelayed({
             identifying = false
-            val m = LightStick.lastManual
-            LightStick.setLed(m[0], m[1], m[2], m[3])
+            Effects.paused = false
+            sendManual()
         }, seq.size * 220L + 80L)
     }
 
@@ -833,6 +895,34 @@ class MainActivity : Activity() {
         resumeMusicOnConnect = resumeMusic && sourceId == 0
         if (resumeMusic && sourceId == 1) toast("Al conectar, toca ▶ para seguir con el audio del celular")
         connectTo(addr, store.nameOf(addr) ?: "Mi lightstick")
+    }
+
+    private fun songLabel(): String =
+        if (songIdx >= 0) "♪ ${Songs.LIST[songIdx].first} · ${Songs.LIST[songIdx].second.toInt()} BPM" else "♪ Automático (detectar BPM)"
+
+    private fun openSongPicker() {
+        val (dlg, box) = stickerDialog()
+        box.addView(cardTitle("CANCIÓN", "Fija el tempo de la canción que va a sonar"))
+        val list = column()
+        val sv = ScrollView(this)
+        sv.addView(list)
+        box.addView(sv)
+        (sv.layoutParams as LinearLayout.LayoutParams).height = dp(380)
+        val opts = ArrayList<Pair<String, Int>>()
+        opts.add("Automático (detectar BPM)" to -1)
+        Songs.LIST.forEachIndexed { i, s -> opts.add("${s.first} · ${s.second.toInt()} BPM" to i) }
+        for ((t, idx) in opts) {
+            val b = softButton(t) {
+                songIdx = idx
+                songBtn.text = songLabel()
+                dlg.dismiss()
+                if (Bus.musicRunning) restartMusicSoon()
+            }
+            if (idx == songIdx) b.background = StickerDrawable(Th.G_YELLOW[0], Th.G_YELLOW[1], dpf(24f), dpf(2.2f), dpf(3f))
+            list.addGap(b, 6)
+        }
+        box.addGap(softButton("Cerrar") { dlg.dismiss() }, 10)
+        dlg.show()
     }
 
     // =================================================================== conexión
@@ -1019,7 +1109,9 @@ class MainActivity : Activity() {
         val i = Intent(this, MusicService::class.java)
         i.putExtra(MusicService.EXTRA_SOURCE, if (data != null) 1 else 0)
         i.putExtra(MusicService.EXTRA_PALETTE, paletteId)
-        i.putExtra(MusicService.EXTRA_MODE, mode)
+        i.putExtra(MusicService.EXTRA_MODE, 1)
+        i.putExtra(MusicService.EXTRA_SONG_BPM, if (songIdx >= 0) Songs.LIST[songIdx].second else 0f)
+        i.putExtra(MusicService.EXTRA_LEAD, lead)
         i.putExtra(MusicService.EXTRA_MINB, minBright)
         if (data != null) {
             i.putExtra(MusicService.EXTRA_CODE, resultCode)

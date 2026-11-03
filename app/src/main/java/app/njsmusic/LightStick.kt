@@ -27,6 +27,9 @@ object Bus {
     @Volatile var b = 0
     @Volatile var message = ""
 
+    @Volatile var bpm = 0f
+    @Volatile var locked = false
+
     /** El modo música se pausó porque se desconectó el lightstick. */
     @Volatile var pausedByDisconnect = false
 }
@@ -84,6 +87,8 @@ object LightStick {
     private var busy = false
     private var busySince = 0L
     private const val MIN_GAP_MS = 50L
+    private const val URGENT_GAP_MS = 25L
+    private var pendingUrgent = false
     private var lastWriteAt = 0L
     private var pumpScheduled = false
     private val pumpLater = Runnable {
@@ -333,7 +338,7 @@ object LightStick {
 
     // ------------------------------------------------------------------ envio de colores
     /** Pone el color. Si hay una escritura en curso, solo se guarda la ultima (la mas reciente gana). */
-    fun setLed(mode: Int, r: Int, g: Int, b: Int) {
+    fun setLed(mode: Int, r: Int, g: Int, b: Int, urgent: Boolean = false) {
         val msg = byteArrayOf(
             mode.coerceIn(1, 4).toByte(),
             r.coerceIn(0, 255).toByte(),
@@ -344,6 +349,7 @@ object LightStick {
             if (lastQueued != null && lastQueued!!.contentEquals(msg) && pending == null) return
             pending = msg
             lastQueued = msg
+            pendingUrgent = urgent
         }
         pump()
     }
@@ -364,14 +370,17 @@ object LightStick {
                 val c = ledChar ?: return
                 // No saturar al lightstick: como máximo ~20 comandos por segundo
                 // (igual que el script de Windows). Si es muy pronto, se reintenta después.
-                val wait = MIN_GAP_MS - (SystemClock.elapsedRealtime() - lastWriteAt)
+                val gap = if (pendingUrgent) URGENT_GAP_MS else MIN_GAP_MS
+                val wait = gap - (SystemClock.elapsedRealtime() - lastWriteAt)
                 if (wait > 0) {
-                    if (!pumpScheduled) {
+                    if (!pumpScheduled || pendingUrgent) {
+                        main.removeCallbacks(pumpLater)
                         pumpScheduled = true
                         main.postDelayed(pumpLater, wait)
                     }
                     return
                 }
+                pendingUrgent = false
                 pending = null
                 lastWriteAt = SystemClock.elapsedRealtime()
                 busy = if (Build.VERSION.SDK_INT >= 33) {
