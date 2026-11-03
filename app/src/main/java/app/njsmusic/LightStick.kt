@@ -53,7 +53,7 @@ object LightStick {
     private val MODEL_CH: UUID = UUID.fromString("00002a24-0000-1000-8000-00805f9b34fb")
     private val FW_CH: UUID = UUID.fromString("00002a26-0000-1000-8000-00805f9b34fb")
 
-    @Volatile var status = "Desconectado"
+    @Volatile var status = ""
     @Volatile var connected = false
     @Volatile var connecting = false
     @Volatile var battery = -1
@@ -106,7 +106,7 @@ object LightStick {
 
     fun infoLine(): String {
         val parts = ArrayList<String>()
-        if (battery >= 0) parts.add("Batería $battery%")
+        if (battery >= 0) parts.add(tr("battery_x", battery))
         if (firmware.isNotEmpty()) parts.add("Firmware $firmware")
         if (model.isNotEmpty()) parts.add(model)
         return parts.joinToString(" · ")
@@ -136,7 +136,7 @@ object LightStick {
 
         override fun onScanFailed(errorCode: Int) {
             scanning = false
-            status = "Error al buscar (código $errorCode)"
+            status = tr("st_scan_error", errorCode)
         }
     }
 
@@ -153,7 +153,7 @@ object LightStick {
     fun scan(ms: Long, onUpdate: (List<Found>) -> Unit, done: (List<Found>) -> Unit) {
         val scanner = adapter?.bluetoothLeScanner
         if (scanner == null) {
-            status = "Bluetooth apagado"
+            status = tr("st_bt_off")
             done(emptyList())
             return
         }
@@ -162,13 +162,13 @@ object LightStick {
         scanning = true
         activeScanner = scanner
         onScanUpdate = onUpdate
-        if (!connected && !connecting) status = "Buscando lightsticks…"
+        if (!connected && !connecting) status = tr("st_scanning")
         val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
         try {
             scanner.startScan(null, settings, scanCb)
         } catch (e: Exception) {
             scanning = false
-            status = "No se pudo buscar: ${e.message}"
+            status = tr("st_scan_fail", e.message ?: "")
             done(emptyList())
             return
         }
@@ -195,7 +195,7 @@ object LightStick {
         }
         if (scanning) {
             scanning = false
-            if (!connected && !connecting) status = "Desconectado"
+            if (!connected && !connecting) status = tr("st_disconnected")
         }
     }
 
@@ -210,7 +210,7 @@ object LightStick {
         connecting = true
         connected = false
         this.address = address
-        status = "Conectando…"
+        status = tr("st_connecting")
         gatt = dev.connectGatt(appContext, false, callback, BluetoothDevice.TRANSPORT_LE)
     }
 
@@ -219,17 +219,17 @@ object LightStick {
         if (g == null) {
             connected = false
             connecting = false
-            status = "Desconectado"
+            status = tr("st_disconnected")
             return
         }
-        status = "Desconectando…"
+        status = tr("st_disconnecting")
         userDisconnect = true
         g.disconnect()
         // por si el sistema nunca avisa del cierre
         main.postDelayed({
             if (gatt === g) {
                 closeGatt()
-                status = "Desconectado"
+                status = tr("st_disconnected")
             }
         }, 1500)
     }
@@ -261,7 +261,7 @@ object LightStick {
                 return
             }
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                status = "Conectado, preparando…"
+                status = tr("st_preparing")
                 try { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) } catch (e: Exception) { }
                 g.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
@@ -273,11 +273,11 @@ object LightStick {
                 if (wasConnected && !byUser) {
                     lostAddress = addr
                     lostCount++
-                    status = "Se desconectó el lightstick"
+                    status = tr("st_lost")
                 } else if (byUser) {
-                    status = "Desconectado"
+                    status = tr("st_disconnected")
                 } else {
-                    status = "No se pudo conectar (código $st). Inténtalo de nuevo."
+                    status = tr("st_connect_fail", st)
                 }
             }
         }
@@ -285,7 +285,7 @@ object LightStick {
         override fun onServicesDiscovered(g: BluetoothGatt, st: Int) {
             val c = g.getService(SVC)?.getCharacteristic(LED_CH)
             if (st != BluetoothGatt.GATT_SUCCESS || c == null) {
-                status = "Este dispositivo no es un lightstick compatible"
+                status = tr("st_incompatible")
                 g.disconnect()
                 return
             }
@@ -299,7 +299,7 @@ object LightStick {
             }
             connected = true
             connecting = false
-            status = "Conectado a " + (g.device.name ?: "lightstick")
+            status = tr("st_connected_to", g.device.name ?: "lightstick")
             // igual que la app oficial: al conectar deja un color fijo (por defecto azul)
             val m = lastManual
             setLed(m[0], m[1], m[2], m[3])

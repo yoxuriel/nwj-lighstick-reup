@@ -78,7 +78,9 @@ class MusicAnalyzer(
     var minBrightness: Float = 0.04f,
     private val palette: IntArray? = null,
     songBpm: Float = 0f,
-    var leadSec: Double = 0.06
+    var leadSec: Double = 0.06,
+    /** true = modo Reactivo (solo reacciona al sonido, sin seguir el tempo). */
+    private val reactive: Boolean = false
 ) {
     private val n = 1024
     private val hop = hopSize.toDouble() / sampleRate
@@ -125,6 +127,12 @@ class MusicAnalyzer(
     private var o2 = 0f
     private var beatCount = 0
     private var lastFired = -10.0
+    /** última vez que un ataque real coincidió con un golpe predicho */
+    private var lastConfirm = -10.0
+    /** el tempo está confirmado por golpes reales recientes */
+    private var trusted = false
+    /** envolvente lenta de la fuerza de los ataques (para ignorar cosas suaves en un puente) */
+    private var onsetPeak = 1e-6f
 
     // volumen
     private var levelPeak = 1e-6
@@ -382,6 +390,9 @@ class MusicAnalyzer(
         val tPeak = nowSec - hop
         val isOnset = !quiet && o1 > thr && o1 >= o2 && o1 >= o && tPeak - lastOnset > 0.10
         val strength = if (isOnset) min(2f, o1 / max(thr, 1e-6f)) else 0f
+        if (isOnset) onsetPeak = max(onsetPeak, o1)
+        onsetPeak = max(1e-6f, onsetPeak * 0.9992f)
+        val bigEnough = o1 > 0.40f * onsetPeak
         if (isOnset) lastOnset = tPeak
         o2 = o1
         o1 = o
@@ -408,7 +419,10 @@ class MusicAnalyzer(
 
         // ---- golpes
         var fired = false
-        if (locked && period > 0) {
+        // Protección: si en ~2.5 s ningún golpe real confirmó el tempo (puente, intro, cambio),
+        // se deja de predecir y se reacciona al sonido hasta volver a confirmarlo.
+        trusted = !reactive && locked && period > 0 && nowSec - lastConfirm < max(2.5, 4 * period)
+        if (!reactive && locked && period > 0) {
             if (nextBeat < 0) {
                 val lb = estimatePhase(nowSec)
                 val base = if (lb > 0) lb else nowSec
@@ -420,13 +434,17 @@ class MusicAnalyzer(
                 while (pb - tPeak > period / 2) pb -= period
                 while (tPeak - pb > period / 2) pb += period
                 val err = tPeak - pb
-                if (abs(err) < 0.15 * period) nextBeat += 0.15 * err
+                if (abs(err) < 0.15 * period) {
+                    nextBeat += 0.15 * err
+                    if (strength > 1.1f && bigEnough) lastConfirm = tPeak
+                }
             }
             while (nowSec >= nextBeat - leadSec) {
-                if (nowSec - (nextBeat - leadSec) < 2 * hop && nowSec - lastFired > period * 0.5) fired = true
+                if (trusted && nowSec - (nextBeat - leadSec) < 2 * hop && nowSec - lastFired > period * 0.5) fired = true
                 nextBeat += period
             }
-        } else if (isOnset && strength > 1.25f && tPeak - lastFired > 0.18) {
+        }
+        if (!trusted && isOnset && strength > (if (reactive) 1.15f else 1.25f) && (reactive || bigEnough) && tPeak - lastFired > 0.16) {
             fired = true
         }
         if (quiet) fired = false
@@ -436,7 +454,12 @@ class MusicAnalyzer(
         if (fired) {
             beatCount++
             val accent = beatCount % 4 == 1
-            flash = if (locked) 1f else (0.75f + 0.25f * min(1f, strength / 1.5f))
+            flash = if (trusted) {
+                // en partes suaves, destello más suave
+                0.55f + 0.45f * min(1f, level / 0.35f)
+            } else {
+                0.6f + 0.4f * min(1f, strength / 1.6f)
+            }
             if (palette != null) palIdx = (palIdx + 1) % palette.size
             hue = (hue + if (accent) 0.17f else 0.07f) % 1f
             sparkle = if (accent && palette != null && palette.size == 1) 0.35f else 0f
@@ -445,7 +468,8 @@ class MusicAnalyzer(
         flash *= exp(-hop / tau).toFloat()
         sparkle *= 0.6f
         floorLevel = floorLevel * 0.92f + level * 0.08f
-        val base = minBrightness + 0.22f * floorLevel * (1f - minBrightness)
+        val follow = if (reactive || !trusted) 0.40f else 0.22f
+        val base = minBrightness + follow * floorLevel * (1f - minBrightness)
         var bright = max(base, flash).coerceIn(0f, 1f)
         bright = ((bright * 16f).roundToInt() / 16f).coerceIn(minBrightness, 1f)
 
@@ -458,7 +482,7 @@ class MusicAnalyzer(
             g += (255 - g) * sparkle
             b += (255 - b) * sparkle
         }
-        return AnalyzerOut(r.toInt(), g.toInt(), b.toInt(), fired, if (bpm > 0) bpm.toFloat() else 0f, locked)
+        return AnalyzerOut(r.toInt(), g.toInt(), b.toInt(), fired, if (bpm > 0 && !reactive) bpm.toFloat() else 0f, trusted)
     }
 
     private fun hsv(h: Float, s: Float): Int {

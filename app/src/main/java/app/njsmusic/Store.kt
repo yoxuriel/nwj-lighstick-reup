@@ -25,7 +25,7 @@ class Store(ctx: Context) {
 
     fun remember(addr: String, name: String) {
         val m = known()
-        m[addr] = name.replace("|", " ").trim().ifEmpty { "Mi lightstick" }
+        m[addr] = name.replace("|", " ").trim().ifEmpty { tr("my_stick") }
         saveKnown(m)
     }
 
@@ -52,7 +52,7 @@ class Store(ctx: Context) {
 fun macTail(addr: String): String = if (addr.length >= 11) addr.substring(addr.length - 11) else addr
 
 fun signalText(rssi: Int): String = when {
-    rssi >= -60 -> "muy cerca"
-    rssi >= -75 -> "cerca"
-    else -> "lejos"
+    rssi >= -60 -> tr("sig_near")
+    rssi >= -75 -> tr("sig_mid")
+    else -> tr("sig_far")
 }

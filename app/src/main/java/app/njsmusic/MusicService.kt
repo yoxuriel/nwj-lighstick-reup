@@ -37,6 +37,7 @@ class MusicService : Service() {
         const val EXTRA_DATA = "data"          // Intent de MediaProjection
         const val EXTRA_SONG_BPM = "songBpm"   // BPM de la canción elegida (0 = detectar)
         const val EXTRA_LEAD = "lead"          // adelanto de los destellos en segundos
+        const val EXTRA_REACTIVE = "reactive"  // true = modo Reactivo
         private const val CHANNEL = "musica"
         private const val NOTIF_ID = 7
         private const val NOTIF_LOST_ID = 8
@@ -50,6 +51,11 @@ class MusicService : Service() {
     private var projection: MediaProjection? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        L.init(this)
+    }
 
     @Suppress("DEPRECATION")
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -76,7 +82,7 @@ class MusicService : Service() {
                 startForeground(NOTIF_ID, notif)
             }
         } catch (e: Exception) {
-            Bus.message = "No se pudo iniciar el servicio: ${e.message}"
+            Bus.message = tr("m_service_fail", e.message ?: "")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -84,14 +90,14 @@ class MusicService : Service() {
         // 2) si es audio interno, obtener el permiso de captura que dio el usuario
         if (internal) {
             if (Build.VERSION.SDK_INT < 29) {
-                Bus.message = "El audio interno requiere Android 10 o superior. Usa el micrófono."
+                Bus.message = tr("t_needs_android10")
                 stopSelf()
                 return START_NOT_STICKY
             }
             val code = intent.getIntExtra(EXTRA_CODE, 0)
             val data = intent.getParcelableExtra<Intent>(EXTRA_DATA)
             if (data == null) {
-                Bus.message = "Falta el permiso de captura de audio."
+                Bus.message = tr("m_missing_capture")
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -105,7 +111,7 @@ class MusicService : Service() {
                 }, Handler(Looper.getMainLooper()))
                 projection = p
             } catch (e: Exception) {
-                Bus.message = "No se pudo capturar el audio interno: ${e.message}"
+                Bus.message = tr("m_capture_fail", e.message ?: "")
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -116,14 +122,15 @@ class MusicService : Service() {
         running = true
         Bus.musicRunning = true
         Bus.pausedByDisconnect = false
-        Bus.message = if (internal) "Escuchando el audio del celular…" else "Escuchando el micrófono…"
+        Bus.message = if (internal) tr("m_listening_phone") else tr("m_listening_mic")
         val analyzer = MusicAnalyzer(
             sampleRate = SAMPLE_RATE,
             hopSize = BLOCK,
             minBrightness = minB,
             palette = Palettes.byId(paletteId),
             songBpm = intent.getFloatExtra(EXTRA_SONG_BPM, 0f),
-            leadSec = intent.getFloatExtra(EXTRA_LEAD, 0.08f).toDouble()
+            leadSec = intent.getFloatExtra(EXTRA_LEAD, 0.08f).toDouble(),
+            reactive = intent.getBooleanExtra(EXTRA_REACTIVE, false)
         )
         Bus.bpm = 0f
         Bus.locked = false
@@ -167,7 +174,7 @@ class MusicService : Service() {
         try {
             rec = buildRecord(internal)
             if (rec.state != AudioRecord.STATE_INITIALIZED) {
-                Bus.message = "No se pudo abrir el audio. ¿Diste el permiso del micrófono?"
+                Bus.message = tr("m_open_audio_fail")
                 return
             }
             rec.startRecording()
@@ -183,7 +190,7 @@ class MusicService : Service() {
             while (running) {
                 if (LightStick.lostCount != lostAtStart) {
                     Bus.pausedByDisconnect = true
-                    Bus.message = "Se desconectó tu lightstick. La música está en pausa."
+                    Bus.message = tr("m_lost_paused")
                     notifyLost()
                     break
                 }
@@ -191,7 +198,7 @@ class MusicService : Service() {
                 while (n < BLOCK && running) {
                     val got = rec.read(shorts, n, BLOCK - n)
                     if (got < 0) {
-                        Bus.message = "Se perdió la señal de audio (código $got)."
+                        Bus.message = tr("m_audio_lost", got)
                         return
                     }
                     n += got
@@ -208,15 +215,11 @@ class MusicService : Service() {
                     silentSince = now
                     if (warned) {
                         warned = false
-                        Bus.message = if (internal) "Escuchando el audio del celular…" else "Escuchando el micrófono…"
+                        Bus.message = if (internal) tr("m_listening_phone") else tr("m_listening_mic")
                     }
                 } else if (!warned && now - silentSince > 8_000_000_000L) {
                     warned = true
-                    Bus.message = if (internal) {
-                        "No llega audio. Puede que la app que suena bloquee la captura (o no hay música). Prueba con el micrófono."
-                    } else {
-                        "No se escucha nada. Sube el volumen o acerca el celular a la fuente."
-                    }
+                    Bus.message = if (internal) tr("m_no_audio_phone") else tr("m_no_audio_mic")
                 }
 
                 val out = analyzer.process(floats, BLOCK, now / 1e9)
@@ -233,7 +236,7 @@ class MusicService : Service() {
                 }
             }
         } catch (e: Exception) {
-            Bus.message = "Error de audio: ${e.message}"
+            Bus.message = tr("m_audio_error", e.message ?: "")
         } finally {
             try {
                 rec?.stop()
@@ -268,7 +271,7 @@ class MusicService : Service() {
         try {
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             nm.createNotificationChannel(
-                NotificationChannel(CHANNEL_ALERT, "Avisos del lightstick", NotificationManager.IMPORTANCE_HIGH)
+                NotificationChannel(CHANNEL_ALERT, tr("n_alert_channel"), NotificationManager.IMPORTANCE_HIGH)
             )
             val open = PendingIntent.getActivity(
                 this, 2,
@@ -276,8 +279,8 @@ class MusicService : Service() {
                 PendingIntent.FLAG_IMMUTABLE
             )
             val n = Notification.Builder(this, CHANNEL_ALERT)
-                .setContentTitle("Se desconectó tu lightstick")
-                .setContentText("El modo música está en pausa. Toca para reconectar.")
+                .setContentTitle(tr("n_lost_title"))
+                .setContentText(tr("n_lost_text"))
                 .setSmallIcon(android.R.drawable.stat_sys_warning)
                 .setContentIntent(open)
                 .setAutoCancel(true)
@@ -290,7 +293,7 @@ class MusicService : Service() {
     private fun buildNotification(): Notification {
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(
-            NotificationChannel(CHANNEL, "Modo música", NotificationManager.IMPORTANCE_LOW)
+            NotificationChannel(CHANNEL, tr("n_channel_music"), NotificationManager.IMPORTANCE_LOW)
         )
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
@@ -301,11 +304,11 @@ class MusicService : Service() {
         )
         @Suppress("DEPRECATION")
         val action = Notification.Action.Builder(
-            android.R.drawable.ic_menu_close_clear_cancel, "Detener", stop
+            android.R.drawable.ic_menu_close_clear_cancel, tr("n_stop"), stop
         ).build()
         return Notification.Builder(this, CHANNEL)
-            .setContentTitle("Modo música activo")
-            .setContentText("Tu lightstick sigue el ritmo")
+            .setContentTitle(tr("n_title"))
+            .setContentText(tr("n_text"))
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentIntent(open)
             .addAction(action)

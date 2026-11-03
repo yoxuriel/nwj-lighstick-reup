@@ -21,6 +21,7 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.os.SystemClock
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -60,18 +61,20 @@ object Th {
     var pixel: Typeface = Typeface.DEFAULT_BOLD
     var stars: Typeface = Typeface.MONOSPACE
 
-    /** Fuentes libres (SIL OFL): Fredoka, Pixelify Sans, Silkscreen. */
+    /**
+     * Fuentes libres (SIL OFL): Fredoka, Pixelify Sans, Silkscreen.
+     * Son versiones FIJAS de cada grosor (no fuentes variables): con fuentes variables algunos
+     * Android calculan el espacio entre letras con un grosor y dibujan con otro (letras desfasadas).
+     */
     fun init(ctx: Context) {
-        round = load(ctx, "fonts/fredoka.ttf", "'wght' 450") ?: Typeface.DEFAULT
-        roundBold = load(ctx, "fonts/fredoka.ttf", "'wght' 650") ?: Typeface.DEFAULT_BOLD
-        pixel = load(ctx, "fonts/pixelify.ttf", "'wght' 600") ?: Typeface.DEFAULT_BOLD
-        stars = load(ctx, "fonts/silkscreen.ttf", null) ?: Typeface.MONOSPACE
+        round = load(ctx, "fonts/fredoka-regular.ttf") ?: Typeface.DEFAULT
+        roundBold = load(ctx, "fonts/fredoka-bold.ttf") ?: Typeface.DEFAULT_BOLD
+        pixel = load(ctx, "fonts/pixelify-semibold.ttf") ?: Typeface.DEFAULT_BOLD
+        stars = load(ctx, "fonts/silkscreen.ttf") ?: Typeface.MONOSPACE
     }
 
-    private fun load(ctx: Context, path: String, axes: String?): Typeface? = try {
-        val b = Typeface.Builder(ctx.assets, path)
-        if (axes != null) b.setFontVariationSettings(axes)
-        b.build()
+    private fun load(ctx: Context, path: String): Typeface? = try {
+        Typeface.createFromAsset(ctx.assets, path)
     } catch (e: Exception) {
         null
     }
@@ -255,6 +258,12 @@ fun View.wobble(deg: Float, ms: Long) {
     a.start()
 }
 
+/** Una sola línea; si el texto no cabe (p. ej. en otro idioma), la letra se achica sola. */
+fun TextView.fitOneLine(maxSp: Float, minSp: Int = 9) {
+    maxLines = 1
+    setAutoSizeTextTypeUniformWithConfiguration(minSp, maxSp.toInt().coerceAtLeast(minSp + 1), 1, TypedValue.COMPLEX_UNIT_SP)
+}
+
 fun Context.label(t: String, sp: Float, bold: Boolean = false, color: Int = Th.INK): TextView =
     TextView(this).apply {
         text = t
@@ -292,13 +301,29 @@ fun Context.cardTitle(t: String, sub: String? = null): LinearLayout = LinearLayo
 class StickerText(ctx: Context) : TextView(ctx) {
     var fillTop: Int = Color.WHITE
     var fillBottom: Int = Color.WHITE
+    /** grosor del contorno; deja margen suficiente para que el contorno no se recorte */
     var outline: Float = ctx.dpf(3f)
+        set(v) {
+            field = v
+            if (autoPad) applyPad()
+        }
+    private var autoPad = true
 
     init {
         setTextColor(Th.INK)
         typeface = Th.roundBold
-        val pad = ctx.dp(4)
-        setPadding(pad, pad / 2, pad, pad / 2)
+        applyPad()
+    }
+
+    private fun applyPad() {
+        val h = (max(outline, context.dpf(2f)) + context.dpf(3f)).toInt()
+        val v = (max(outline, context.dpf(1f)) + context.dpf(1f)).toInt()
+        super.setPadding(h, v, h, v)
+    }
+
+    override fun setPadding(left: Int, top: Int, right: Int, bottom: Int) {
+        autoPad = false
+        super.setPadding(left, top, right, bottom)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -336,6 +361,7 @@ fun Context.stickerButton(t: String, grad: IntArray, onClick: () -> Unit): Stick
     b.gravity = Gravity.CENTER
     b.background = StickerDrawable(grad[0], grad[1], dpf(30f), dpf(2.5f), dpf(4f), true)
     b.setPadding(dp(18), dp(12), dp(18) + dp(4), dp(12) + dp(4))
+    b.fitOneLine(18f, 11)
     b.isClickable = true
     b.setOnClickListener { onClick() }
     b.touchFx(dpf(30f))
@@ -351,6 +377,7 @@ fun Context.softButton(t: String, onClick: () -> Unit): TextView = TextView(this
     setTextColor(Th.INK)
     background = StickerDrawable(Th.G_WHITE[0], Th.G_WHITE[1], dpf(24f), dpf(2.2f), dpf(3f))
     setPadding(dp(12), dp(10), dp(12) + dp(3), dp(10) + dp(3))
+    fitOneLine(15f, 10)
     isClickable = true
     setOnClickListener { onClick() }
     touchFx(dpf(24f))
@@ -730,8 +757,8 @@ fun Context.swatch(name: String, ui: Int, led: Int, sizeDp: Int, out: MutableLis
     col.addView(b, LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp)))
     val t = label(name, 12.5f, true)
     t.gravity = Gravity.CENTER
-    t.maxLines = 1
-    col.addView(t)
+    t.fitOneLine(12.5f, 8)
+    col.addView(t, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
     col.isClickable = true
     col.setOnClickListener { onClick() }
     col.touchFx(dpf(20f))
@@ -810,9 +837,9 @@ class EffectCard(ctx: Context, kind: Int, title: String, val mode: Int) : Linear
         setPadding(ctx.dp(8), ctx.dp(12), ctx.dp(8) + ctx.dp(4), ctx.dp(10) + ctx.dp(4))
         addView(icon, LayoutParams(ctx.dp(46), ctx.dp(46)))
         text.gravity = Gravity.CENTER
-        text.maxLines = 1
         text.setPadding(0, ctx.dp(4), 0, 0)
-        addView(text)
+        text.fitOneLine(14f, 9)
+        addView(text, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         isClickable = true
         touchFx(ctx.dpf(22f))
         setChosen(false)
@@ -832,9 +859,9 @@ class StyleCard(ctx: Context, preview: View, previewW: Int, previewH: Int, title
         addView(preview, LayoutParams(previewW, previewH))
         val t = ctx.label(title, titleSp, true)
         t.gravity = Gravity.CENTER
-        t.maxLines = 1
         t.setPadding(0, ctx.dp(5), 0, 0)
-        addView(t)
+        t.fitOneLine(titleSp, 8)
+        addView(t, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         isClickable = true
         touchFx(ctx.dpf(22f))
         setChosen(false)
@@ -987,18 +1014,20 @@ class NavBar(ctx: Context, labels: List<String>, private val onSelect: (Int) -> 
 
     init {
         orientation = HORIZONTAL
+        isBaselineAligned = false
         gravity = Gravity.CENTER_VERTICAL
         background = StickerDrawable(Color.WHITE, Color.WHITE, ctx.dpf(32f), ctx.dpf(2.6f), ctx.dpf(5f))
         setPadding(ctx.dp(6), ctx.dp(6), ctx.dp(6) + ctx.dp(5), ctx.dp(6) + ctx.dp(5))
         labels.forEachIndexed { i, t ->
             val item = LinearLayout(ctx)
             item.orientation = HORIZONTAL
+            item.isBaselineAligned = false
             item.gravity = Gravity.CENTER
-            item.setPadding(ctx.dp(8), ctx.dp(8), ctx.dp(8), ctx.dp(8))
+            item.setPadding(ctx.dp(6), ctx.dp(8), ctx.dp(6) + ctx.dp(3), ctx.dp(8) + ctx.dp(3))
             val ic = NavIcon(ctx, i)
             item.addView(ic, LayoutParams(ctx.dp(22), ctx.dp(22)))
             val tv = ctx.stickerText(t, 15f, intArrayOf(Th.INK, Th.INK), 0f)
-            tv.setPadding(ctx.dp(5), 0, ctx.dp(2), 0)
+            tv.setPadding(ctx.dp(5), ctx.dp(3), ctx.dp(4), ctx.dp(3))
             item.addView(tv)
             item.isClickable = true
             item.setOnClickListener { onSelect(i) }
@@ -1014,7 +1043,7 @@ class NavBar(ctx: Context, labels: List<String>, private val onSelect: (Int) -> 
         for (k in items.indices) {
             val on = k == i
             items[k].background = if (on) {
-                StickerDrawable(Th.G_GREEN[1], 0xFF4DBE1F.toInt(), context.dpf(26f), context.dpf(2.2f), context.dpf(2.5f), true)
+                StickerDrawable(Th.G_GREEN[1], 0xFF4DBE1F.toInt(), context.dpf(26f), context.dpf(2.2f), context.dpf(3f), true)
             } else {
                 null
             }
