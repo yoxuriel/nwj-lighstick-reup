@@ -244,7 +244,7 @@ class MainActivity : Activity() {
         outer.isBaselineAligned = false
         outer.gravity = Gravity.CENTER_VERTICAL
         outer.setPadding(dp(12), dp(10), dp(14), dp(6))
-        val logo = bunnyLogo()
+        val logo = brandMark()
         logo.wobble(4f, 2200)
         outer.addView(logo, LinearLayout.LayoutParams(dp(62), dp(66)))
         val col = column()
@@ -255,8 +255,7 @@ class MainActivity : Activity() {
         titleRow.orientation = LinearLayout.HORIZONTAL
         titleRow.isBaselineAligned = false
         titleRow.gravity = Gravity.CENTER_VERTICAL
-        titleRow.addView(StarText(this, "NWJ", Th.INK), LinearLayout.LayoutParams(dp(74), -2))
-        titleRow.addView(reupLogo(), LinearLayout.LayoutParams(0, dp(44), 1f).apply { leftMargin = dp(8); rightMargin = dp(36) })
+        titleRow.addView(reupLogo(), LinearLayout.LayoutParams(0, dp(52), 1f).apply { rightMargin = dp(36) })
         col.addView(titleRow, LinearLayout.LayoutParams(-1, -2))
 
         val sub = LinearLayout(this)
@@ -623,7 +622,7 @@ class MainActivity : Activity() {
         aboutHead.orientation = LinearLayout.HORIZONTAL
         aboutHead.isBaselineAligned = false
         aboutHead.gravity = Gravity.CENTER_VERTICAL
-        aboutHead.addView(bunnyLogo(), LinearLayout.LayoutParams(dp(54), dp(58)))
+        aboutHead.addView(brandMark(), LinearLayout.LayoutParams(dp(54), dp(58)))
         aboutHead.addView(reupLogo(), LinearLayout.LayoutParams(0, dp(48), 1f).apply { leftMargin = dp(8) })
         about.addView(aboutHead)
         about.addGap(label(tr("about_body"), 13.5f, false, Th.INK), 6)
@@ -1049,10 +1048,9 @@ class MainActivity : Activity() {
         val top = FrameLayout(this)
         val titles = column()
         titles.gravity = Gravity.CENTER_HORIZONTAL
-        val big = bunnyLogo()
+        val big = brandMark()
         big.wobble(5f, 2000)
         titles.addView(big, LinearLayout.LayoutParams(dp(150), dp(160)))
-        titles.addView(StarText(this, "NWJ", Th.INK), LinearLayout.LayoutParams(dp(130), -2).apply { topMargin = dp(8) })
         val wl = reupLogo()
         wl.scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
         titles.addView(wl, LinearLayout.LayoutParams(-1, dp(96)).apply { topMargin = dp(6) })

@@ -514,8 +514,8 @@ fun Context.reupLogo(): android.widget.ImageView = android.widget.ImageView(this
     adjustViewBounds = true
 }
 
-/** Logo: el conejo (imagen del proyecto). */
-fun Context.bunnyLogo(): android.widget.ImageView = android.widget.ImageView(this).apply {
+/** Marca de la app: lightstick original del logo RE UP! (archivo res/drawable-nodpi/bunny_logo.png). */
+fun Context.brandMark(): android.widget.ImageView = android.widget.ImageView(this).apply {
     setImageResource(R.drawable.bunny_logo)
     scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
     adjustViewBounds = true
